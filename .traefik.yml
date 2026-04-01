@@ -1,0 +1,12 @@
+displayName: AnythingLLM Keycloak SSO
+type: middleware
+import: github.com/devantage/traefik-anythingllm-keycloak-sso
+summary: Log in to AnythingLLM via OIDC on Keycloak.
+testData:
+  keycloakIssuerURL: https://keycloak.example.com/realms/example
+  clientID: anythingllm
+  callbackPath: /_auth/keycloak/callback
+  anythingLLMBaseURL: http://anythingllm.usage.svc.cluster.local:3001
+  usernameClaim: preferred_username
+  emailClaim: email
+  defaultRole: default
