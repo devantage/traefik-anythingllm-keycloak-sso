@@ -9,4 +9,6 @@ testData:
   keycloakEmailClaim: email
   anythingLLMBaseURL: http://anythingllm.usage.svc.cluster.local:3001
   anythingLLMDefaultRole: default
+  anythingLLMDefaultWorkspaceSlugs:
+    - onboarding
   callbackPath: /_auth/keycloak/callback

@@ -19,26 +19,27 @@ import (
 )
 
 type Config struct {
-	KeycloakIssuerURL      	 string `json:"keycloakIssuerURL,omitempty"`
-	KeycloakClientID         string `json:"keycloakClientId,omitempty"`
-	KeycloakClientSecret     string `json:"keycloakClientSecret,omitempty"`
-	KeycloakClientSecretEnv  string `json:"keycloakClientSecretEnv,omitempty"`
-	KeycloakScopes           string `json:"keycloakScopes,omitempty"`
-	KeycloakUsernameClaim    string `json:"keycloakUsernameClaim,omitempty"`
-	KeycloakEmailClaim       string `json:"keycloakEmailClaim,omitempty"`
-	AnythingLLMBaseURL       string `json:"anythingLLMBaseURL,omitempty"`
-	AnythingLLMApiKey        string `json:"anythingLLMApiKey,omitempty"`
-	AnythingLLMApiKeyEnv     string `json:"anythingLLMApiKeyEnv,omitempty"`
-	AnythingLLMCreateUsers   bool   `json:"anythingLLMCreateUsers,omitempty"`
-	AnythingLLMDefaultRole   string `json:"anythingLLMDefaultRole,omitempty"`
-	CallbackPath             string `json:"callbackPath,omitempty"`
-	LogoutPath               string `json:"logoutPath,omitempty"`
-	SessionCookieName        string `json:"sessionCookieName,omitempty"`
-	SessionCookieSecure      bool   `json:"sessionCookieSecure,omitempty"`
-	InsecureSkipTLSVerify    bool   `json:"insecureSkipTLSVerify,omitempty"`
-	SessionSecret            string `json:"sessionSecret,omitempty"`
-	SessionSecretEnv         string `json:"sessionSecretEnv,omitempty"`
-	SessionTTLSeconds        int    `json:"sessionTTLSeconds,omitempty"`
+	KeycloakIssuerURL            	   string `json:"keycloakIssuerURL,omitempty"`
+	KeycloakClientID                   string `json:"keycloakClientId,omitempty"`
+	KeycloakClientSecret               string `json:"keycloakClientSecret,omitempty"`
+	KeycloakClientSecretEnv            string `json:"keycloakClientSecretEnv,omitempty"`
+	KeycloakScopes                     string `json:"keycloakScopes,omitempty"`
+	KeycloakUsernameClaim              string `json:"keycloakUsernameClaim,omitempty"`
+	KeycloakEmailClaim                 string `json:"keycloakEmailClaim,omitempty"`
+	AnythingLLMBaseURL                 string `json:"anythingLLMBaseURL,omitempty"`
+	AnythingLLMApiKey                  string `json:"anythingLLMApiKey,omitempty"`
+	AnythingLLMApiKeyEnv               string `json:"anythingLLMApiKeyEnv,omitempty"`
+	AnythingLLMCreateUsers             bool   `json:"anythingLLMCreateUsers,omitempty"`
+	AnythingLLMDefaultRole             string `json:"anythingLLMDefaultRole,omitempty"`
+	AnythingLLMDefaultWorkspacesSlugs  []string `json:"anythingLLMDefaultWorkspacesSlugs,omitempty"`
+	CallbackPath                       string `json:"callbackPath,omitempty"`
+	LogoutPath                         string `json:"logoutPath,omitempty"`
+	SessionCookieName                  string `json:"sessionCookieName,omitempty"`
+	SessionCookieSecure                bool   `json:"sessionCookieSecure,omitempty"`
+	InsecureSkipTLSVerify              bool   `json:"insecureSkipTLSVerify,omitempty"`
+	SessionSecret                      string `json:"sessionSecret,omitempty"`
+	SessionSecretEnv                   string `json:"sessionSecretEnv,omitempty"`
+	SessionTTLSeconds                  int    `json:"sessionTTLSeconds,omitempty"`
 }
 
 type Middleware struct {
@@ -75,14 +76,38 @@ type anythingUser struct {
 	Username string `json:"username"`
 }
 
+type anythingWorkspace struct {
+	ID   int    `json:"id"`
+	Slug string `json:"slug"`
+	Name string `json:"name"`
+}
+
 type anythingCreateUserResponse struct {
 	User  *anythingUser `json:"user"`
 	Error string        `json:"error"`
 }
 
+type anythingWorkspacesResponse struct {
+	Workspaces []anythingWorkspace `json:"workspaces"`
+}
+
 type anythingIssueTokenResponse struct {
 	Token     string `json:"token"`
 	LoginPath string `json:"loginPath"`
+}
+
+type anythingWorkspaceUser struct {
+	UserID int    `json:"userId"`
+	Role   string `json:"role"`
+}
+
+type anythingWorkspaceUsersResponse struct {
+	Users []anythingWorkspaceUser `json:"users"`
+}
+
+type anythingWorkspaceManageUsersResponse struct {
+	Success bool   `json:"success"`
+	Error   string `json:"error"`
 }
 
 func CreateConfig() *Config {
@@ -92,8 +117,8 @@ func CreateConfig() *Config {
 		KeycloakEmailClaim:      "email",
 		AnythingLLMCreateUsers:  true,
 		AnythingLLMDefaultRole:  "default",
-		CallbackPath:            "/_auth/keycloak/callback",
-		LogoutPath:              "/logout",
+		CallbackPath:            "/sso/callback",
+		LogoutPath:              "/sso/logout",
 		SessionCookieName:       "_anythingllm_keycloak_sso",
 		SessionCookieSecure:     true,
 		SessionTTLSeconds:       3600,
@@ -167,6 +192,12 @@ func (m *Middleware) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 
 	if _, ok := m.readSession(req); ok {
 		m.next.ServeHTTP(rw, req)
+
+		return
+	}
+
+	if !shouldStartLogin(req) {
+		m.writeError(rw, http.StatusUnauthorized, "authentication required")
 
 		return
 	}
@@ -258,6 +289,11 @@ func (m *Middleware) handleCallback(rw http.ResponseWriter, req *http.Request) {
 	userID, err := m.ensureAnythingLLMUser(req.Context(), username)
 
 	if err != nil {
+		m.writeError(rw, http.StatusBadGateway, err.Error())
+		return
+	}
+
+	if err := m.syncDefaultWorkspaces(req.Context(), userID); err != nil {
 		m.writeError(rw, http.StatusBadGateway, err.Error())
 		return
 	}
@@ -467,6 +503,158 @@ func (m *Middleware) listAnythingLLMUsers(ctx context.Context) ([]anythingUser, 
 	return body.Users, nil
 }
 
+func (m *Middleware) listAnythingLLMWorkspaces(ctx context.Context) ([]anythingWorkspace, error) {
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, m.anythingURL("/api/v1/workspaces"), nil)
+
+	if err != nil {
+		return nil, fmt.Errorf("failed to prepare AnythingLLM workspaces request: %w", err)
+	}
+
+	request.Header.Set("Authorization", "Bearer "+m.anythingLLMKey)
+
+	response, err := m.client.Do(request)
+
+	if err != nil {
+		return nil, fmt.Errorf("failed to list AnythingLLM workspaces: %w", err)
+	}
+
+	defer response.Body.Close()
+
+	if response.StatusCode >= 300 {
+		body, _ := io.ReadAll(io.LimitReader(response.Body, 512))
+
+		return nil, fmt.Errorf("AnythingLLM workspaces endpoint returned %s: %s", response.Status, strings.TrimSpace(string(body)))
+	}
+
+	var body anythingWorkspacesResponse
+
+	if err := json.NewDecoder(response.Body).Decode(&body); err != nil {
+		return nil, fmt.Errorf("failed to decode AnythingLLM workspaces response: %w", err)
+	}
+
+	return body.Workspaces, nil
+}
+
+func (m *Middleware) listAnythingLLMWorkspaceUsers(ctx context.Context, workspaceID int) ([]anythingWorkspaceUser, error) {
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, m.anythingURL(fmt.Sprintf("/api/v1/admin/workspaces/%d/users", workspaceID)), nil)
+
+	if err != nil {
+		return nil, fmt.Errorf("failed to prepare AnythingLLM workspace users request: %w", err)
+	}
+
+	request.Header.Set("Authorization", "Bearer "+m.anythingLLMKey)
+
+	response, err := m.client.Do(request)
+
+	if err != nil {
+		return nil, fmt.Errorf("failed to list AnythingLLM workspace users: %w", err)
+	}
+
+	defer response.Body.Close()
+
+	if response.StatusCode >= 300 {
+		body, _ := io.ReadAll(io.LimitReader(response.Body, 512))
+
+		return nil, fmt.Errorf("AnythingLLM workspace users endpoint returned %s: %s", response.Status, strings.TrimSpace(string(body)))
+	}
+
+	var body anythingWorkspaceUsersResponse
+
+	if err := json.NewDecoder(response.Body).Decode(&body); err != nil {
+		return nil, fmt.Errorf("failed to decode AnythingLLM workspace users response: %w", err)
+	}
+
+	return body.Users, nil
+}
+
+func (m *Middleware) addUserToAnythingLLMWorkspace(ctx context.Context, workspaceSlug string, userID int) error {
+	payload, err := json.Marshal(map[string]any{
+		"userIds": []int{userID},
+		"reset":   false,
+	})
+
+	if err != nil {
+		return fmt.Errorf("failed to encode workspace membership payload for %q: %w", workspaceSlug, err)
+	}
+
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, m.anythingURL("/api/v1/admin/workspaces/"+url.PathEscape(workspaceSlug)+"/manage-users"), strings.NewReader(string(payload)))
+
+	if err != nil {
+		return fmt.Errorf("failed to prepare AnythingLLM workspace membership request for %q: %w", workspaceSlug, err)
+	}
+
+	request.Header.Set("Authorization", "Bearer "+m.anythingLLMKey)
+	request.Header.Set("Content-Type", "application/json")
+
+	response, err := m.client.Do(request)
+
+	if err != nil {
+		return fmt.Errorf("failed to update AnythingLLM workspace membership for %q: %w", workspaceSlug, err)
+	}
+
+	defer response.Body.Close()
+
+	var body anythingWorkspaceManageUsersResponse
+
+	if err := json.NewDecoder(response.Body).Decode(&body); err != nil {
+		return fmt.Errorf("failed to decode AnythingLLM workspace membership response for %q: %w", workspaceSlug, err)
+	}
+
+	if response.StatusCode >= 300 || !body.Success {
+		if body.Error == "" {
+			body.Error = response.Status
+		}
+
+		return fmt.Errorf("AnythingLLM rejected workspace membership update for %q: %s", workspaceSlug, body.Error)
+	}
+
+	return nil
+}
+
+func (m *Middleware) syncDefaultWorkspaces(ctx context.Context, userID int) error {
+	targetSlugs := normalizedWorkspaceSlugs(m.config.AnythingLLMDefaultWorkspacesSlugs)
+
+	if len(targetSlugs) == 0 {
+		return nil
+	}
+
+	workspaces, err := m.listAnythingLLMWorkspaces(ctx)
+
+	if err != nil {
+		return err
+	}
+
+	workspaceBySlug := make(map[string]anythingWorkspace, len(workspaces))
+
+	for _, workspace := range workspaces {
+		workspaceBySlug[workspace.Slug] = workspace
+	}
+
+	for _, workspaceSlug := range targetSlugs {
+		workspace, ok := workspaceBySlug[workspaceSlug]
+
+		if !ok {
+			return fmt.Errorf("AnythingLLM workspace %q was not found", workspaceSlug)
+		}
+
+		users, err := m.listAnythingLLMWorkspaceUsers(ctx, workspace.ID)
+
+		if err != nil {
+			return err
+		}
+
+		if workspaceHasUser(users, userID) {
+			continue
+		}
+
+		if err := m.addUserToAnythingLLMWorkspace(ctx, workspace.Slug, userID); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
 func (m *Middleware) issueAnythingLLMToken(ctx context.Context, userID int) (string, error) {
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, m.anythingURL(fmt.Sprintf("/api/v1/users/%d/issue-auth-token", userID)), nil)
 	
@@ -657,6 +845,24 @@ func requestTarget(req *http.Request) string {
 	return target
 }
 
+func shouldStartLogin(req *http.Request) bool {
+	if req.Method != http.MethodGet && req.Method != http.MethodHead {
+		return false
+	}
+
+	if strings.EqualFold(req.Header.Get("Sec-Fetch-Mode"), "navigate") {
+		return true
+	}
+
+	accept := strings.ToLower(req.Header.Get("Accept"))
+
+	if strings.Contains(accept, "text/plain") || strings.Contains(accept, "text/html") || strings.Contains(accept, "application/javascript") || strings.Contains(accept, "text/css") {
+		return true
+	}
+
+	return accept == "" && req.URL.Path == "/"
+}
+
 func withRedirectTo(loginPath, returnTo string) string {
 	if returnTo == "" || returnTo == "/" {
 		return loginPath
@@ -715,6 +921,42 @@ func firstNonEmpty(values ...string) string {
 			return value
 		}
 	}
-	
+
 	return ""
+}
+
+func normalizedWorkspaceSlugs(values []string) []string {
+	if len(values) == 0 {
+		return nil
+	}
+
+	slugs := make([]string, 0, len(values))
+	seen := make(map[string]struct{}, len(values))
+
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+
+		if value == "" {
+			continue
+		}
+
+		if _, ok := seen[value]; ok {
+			continue
+		}
+
+		seen[value] = struct{}{}
+		slugs = append(slugs, value)
+	}
+
+	return slugs
+}
+
+func workspaceHasUser(users []anythingWorkspaceUser, userID int) bool {
+	for _, user := range users {
+		if user.UserID == userID {
+			return true
+		}
+	}
+
+	return false
 }
