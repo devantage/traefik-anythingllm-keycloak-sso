@@ -108,15 +108,15 @@ func TestLogoutRedirectsToKeycloakLogout(t *testing.T) {
 	handler, err := New(context.Background(), http.HandlerFunc(func(rw http.ResponseWriter, _ *http.Request) {
 		rw.WriteHeader(http.StatusNoContent)
 	}), &Config{
-		KeycloakIssuerURL:     "https://keycloak.example.com/realms/cognitio",
-		KeycloakClientID:      "anythingllm",
-		KeycloakClientSecret:  "secret",
-		AnythingLLMBaseURL:    "http://anythingllm.cognitio.svc.cluster.local:3001",
-		AnythingLLMApiKey:     "api-key",
-		LogoutPath:            "/logout",
-		SessionCookieName:     "_anythingllm_keycloak_sso",
-		SessionCookieSecure:   true,
-		SessionSecret:         "session-secret",
+		KeycloakIssuerURL:    "https://keycloak.example.com/realms/cognitio",
+		KeycloakClientID:     "anythingllm",
+		KeycloakClientSecret: "secret",
+		AnythingLLMBaseURL:   "http://anythingllm.cognitio.svc.cluster.local:3001",
+		AnythingLLMApiKey:    "api-key",
+		LogoutPath:           "/logout",
+		SessionCookieName:    "_anythingllm_keycloak_sso",
+		SessionCookieSecure:  true,
+		SessionSecret:        "session-secret",
 	}, "anythingllm-keycloak-sso")
 	if err != nil {
 		t.Fatalf("unexpected error creating middleware: %v", err)
@@ -209,13 +209,13 @@ func TestSyncDefaultWorkspacesAddsMissingMembershipOnly(t *testing.T) {
 	handler, err := New(context.Background(), http.HandlerFunc(func(rw http.ResponseWriter, _ *http.Request) {
 		rw.WriteHeader(http.StatusNoContent)
 	}), &Config{
-		KeycloakIssuerURL:                  "https://keycloak.example.com/realms/cognitio",
-		KeycloakClientID:                   "anythingllm",
-		KeycloakClientSecret:               "secret",
-		AnythingLLMBaseURL:                 server.URL,
-		AnythingLLMApiKey:                  "api-key",
-		SessionSecret:                      "session-secret",
-		AnythingLLMDefaultWorkspaceSlugs: []string{"engineering", "support", "support"},
+		KeycloakIssuerURL:                 "https://keycloak.example.com/realms/cognitio",
+		KeycloakClientID:                  "anythingllm",
+		KeycloakClientSecret:              "secret",
+		AnythingLLMBaseURL:                server.URL,
+		AnythingLLMApiKey:                 "api-key",
+		SessionSecret:                     "session-secret",
+		AnythingLLMDefaultWorkspacesSlugs: []string{"engineering", "support", "support"},
 	}, "anythingllm-keycloak-sso")
 	if err != nil {
 		t.Fatalf("unexpected error creating middleware: %v", err)
