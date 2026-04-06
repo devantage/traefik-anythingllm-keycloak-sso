@@ -76,10 +76,10 @@ spec:
     anythingllmKeycloakSso:
       keycloakIssuerURL: https://keycloak.example.com/realms/example
       keycloakClientId: anythingllm
-      clientSecretEnv: KEYCLOAK_CLIENT_SECRET
+      keycloakClientSecretEnv: KEYCLOAK_CLIENT_SECRET_ENV
       anythingLLMBaseURL: https://anythingllm.example.com
-      anythingLLMApiKeyEnv: ANYTHINGLLM_API_KEY
-      sessionSecretEnv: TRAEFIK_ANYTHINGLLM_SESSION_SECRET
+      anythingLLMApiKeyEnv: ANYTHINGLLM_API_KEY_ENV
+      sessionSecretEnv: TRAEFIK_ANYTHINGLLM_SESSION_SECRET_ENV
       keycloakScopes: openid profile email
       keycloakUsernameClaim: preferred_username
       keycloakEmailClaim: email
