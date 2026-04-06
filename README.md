@@ -88,6 +88,11 @@ spec:
       anythingLLMDefaultWorkspaceSlugs:
         - onboarding
         - company-docs
+      callbackPath: /sso/callback
+      logoutPath: /sso/logout
+      sessionCookieName: _anythingllm_keycloak_sso
+      sessionCookieSecure: true
+      sessionTTLSeconds: 3600
 ```
 
 ## Configuration Parameters
