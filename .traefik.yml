@@ -8,3 +8,4 @@ testData:
   keycloakClientSecret: clientSecret
   anythingLLMBaseURL: https://anythingllm.example.com
   anythingLLMApiKey: apiKey
+  sessionSecret: sessionSecret
