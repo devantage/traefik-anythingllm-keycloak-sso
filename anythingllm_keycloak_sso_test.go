@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestWithRedirectTo(t *testing.T) {
@@ -101,6 +102,145 @@ func TestUnauthenticatedAssetRequestReturnsUnauthorizedInsteadOfRedirect(t *test
 
 	if location := recorder.Header().Get("Location"); location != "" {
 		t.Fatalf("expected no redirect location, got %s", location)
+	}
+}
+
+func TestReadSessionAcceptsMatchingUsernameClaim(t *testing.T) {
+	handler, err := New(context.Background(), http.HandlerFunc(func(rw http.ResponseWriter, _ *http.Request) {
+		rw.WriteHeader(http.StatusNoContent)
+	}), &Config{
+		KeycloakIssuerURL:      "https://keycloak.example.com/realms/cognitio",
+		KeycloakClientID:       "anythingllm",
+		KeycloakClientSecret:   "secret",
+		KeycloakUsernameClaim:  "email",
+		KeycloakEmailClaim:     "email",
+		AnythingLLMBaseURL:     "http://anythingllm.cognitio.svc.cluster.local:3001",
+		AnythingLLMApiKey:      "api-key",
+		SessionSecret:          "session-secret",
+		SessionCookieName:      "_anythingllm_keycloak_sso",
+		SessionTTLSeconds:      3600,
+		AnythingLLMCreateUsers: true,
+		AnythingLLMDefaultRole: "default",
+	}, "anythingllm-keycloak-sso")
+	if err != nil {
+		t.Fatalf("unexpected error creating middleware: %v", err)
+	}
+
+	middleware, ok := handler.(*Middleware)
+	if !ok {
+		t.Fatalf("expected *Middleware, got %T", handler)
+	}
+
+	cookieRecorder := httptest.NewRecorder()
+
+	if err := middleware.writeSignedCookie(cookieRecorder, middleware.config.SessionCookieName, SessionPayload{
+		Username:      "alice@example.com",
+		UsernameClaim: "email",
+		ExpiresAt:     time.Now().Add(time.Hour).Unix(),
+	}, time.Hour); err != nil {
+		t.Fatalf("failed to write session cookie: %v", err)
+	}
+
+	request := httptest.NewRequest(http.MethodGet, "https://llm.example.com/", nil)
+	request.AddCookie(cookieRecorder.Result().Cookies()[0])
+
+	session, ok := middleware.readSession(request)
+	if !ok {
+		t.Fatalf("expected session to be accepted")
+	}
+
+	if session.Username != "alice@example.com" {
+		t.Fatalf("expected username to round-trip, got %q", session.Username)
+	}
+}
+
+func TestReadSessionRejectsChangedUsernameClaim(t *testing.T) {
+	handler, err := New(context.Background(), http.HandlerFunc(func(rw http.ResponseWriter, _ *http.Request) {
+		rw.WriteHeader(http.StatusNoContent)
+	}), &Config{
+		KeycloakIssuerURL:      "https://keycloak.example.com/realms/cognitio",
+		KeycloakClientID:       "anythingllm",
+		KeycloakClientSecret:   "secret",
+		KeycloakUsernameClaim:  "email",
+		KeycloakEmailClaim:     "email",
+		AnythingLLMBaseURL:     "http://anythingllm.cognitio.svc.cluster.local:3001",
+		AnythingLLMApiKey:      "api-key",
+		SessionSecret:          "session-secret",
+		SessionCookieName:      "_anythingllm_keycloak_sso",
+		SessionTTLSeconds:      3600,
+		AnythingLLMCreateUsers: true,
+		AnythingLLMDefaultRole: "default",
+	}, "anythingllm-keycloak-sso")
+	if err != nil {
+		t.Fatalf("unexpected error creating middleware: %v", err)
+	}
+
+	middleware, ok := handler.(*Middleware)
+	if !ok {
+		t.Fatalf("expected *Middleware, got %T", handler)
+	}
+
+	cookieRecorder := httptest.NewRecorder()
+
+	if err := middleware.writeSignedCookie(cookieRecorder, middleware.config.SessionCookieName, SessionPayload{
+		Username:      "alice",
+		UsernameClaim: "preferred_username",
+		ExpiresAt:     time.Now().Add(time.Hour).Unix(),
+	}, time.Hour); err != nil {
+		t.Fatalf("failed to write session cookie: %v", err)
+	}
+
+	request := httptest.NewRequest(http.MethodGet, "https://llm.example.com/", nil)
+	request.AddCookie(cookieRecorder.Result().Cookies()[0])
+
+	if _, ok := middleware.readSession(request); ok {
+		t.Fatalf("expected session to be rejected after username claim change")
+	}
+}
+
+func TestReadSessionRejectsLegacySessionWithoutUsernameClaim(t *testing.T) {
+	handler, err := New(context.Background(), http.HandlerFunc(func(rw http.ResponseWriter, _ *http.Request) {
+		rw.WriteHeader(http.StatusNoContent)
+	}), &Config{
+		KeycloakIssuerURL:      "https://keycloak.example.com/realms/cognitio",
+		KeycloakClientID:       "anythingllm",
+		KeycloakClientSecret:   "secret",
+		KeycloakUsernameClaim:  "email",
+		KeycloakEmailClaim:     "email",
+		AnythingLLMBaseURL:     "http://anythingllm.cognitio.svc.cluster.local:3001",
+		AnythingLLMApiKey:      "api-key",
+		SessionSecret:          "session-secret",
+		SessionCookieName:      "_anythingllm_keycloak_sso",
+		SessionTTLSeconds:      3600,
+		AnythingLLMCreateUsers: true,
+		AnythingLLMDefaultRole: "default",
+	}, "anythingllm-keycloak-sso")
+	if err != nil {
+		t.Fatalf("unexpected error creating middleware: %v", err)
+	}
+
+	middleware, ok := handler.(*Middleware)
+	if !ok {
+		t.Fatalf("expected *Middleware, got %T", handler)
+	}
+
+	cookieRecorder := httptest.NewRecorder()
+
+	if err := middleware.writeSignedCookie(cookieRecorder, middleware.config.SessionCookieName, struct {
+		Username  string `json:"username"`
+		ExpiresAt int64  `json:"expiresAt"`
+	}{
+		Username:  "alice",
+		ExpiresAt: time.Now().Add(time.Hour).Unix(),
+	}, time.Hour); err != nil {
+		t.Fatalf("failed to write legacy session cookie: %v", err)
+	}
+
+	request := httptest.NewRequest(http.MethodGet, "https://llm.example.com/", nil)
+	request.AddCookie(cookieRecorder.Result().Cookies()[0])
+
+	if _, ok := middleware.readSession(request); ok {
+		t.Fatalf("expected legacy session without usernameClaim to be rejected")
 	}
 }
 

@@ -59,8 +59,9 @@ type StatePayload struct {
 }
 
 type SessionPayload struct {
-	Username  string `json:"username"`
-	ExpiresAt int64  `json:"expiresAt"`
+	Username      string `json:"username"`
+	UsernameClaim string `json:"usernameClaim"`
+	ExpiresAt     int64  `json:"expiresAt"`
 }
 
 type KeycloakExchangeTokenResponse struct {
@@ -306,8 +307,9 @@ func (m *Middleware) handleCallback(rw http.ResponseWriter, req *http.Request) {
 	}
 
 	if err := m.writeSignedCookie(rw, m.config.SessionCookieName, SessionPayload{
-		Username:  username,
-		ExpiresAt: time.Now().Add(time.Duration(m.config.SessionTTLSeconds) * time.Second).Unix(),
+		Username:      username,
+		UsernameClaim: m.sessionUsernameClaim(),
+		ExpiresAt:     time.Now().Add(time.Duration(m.config.SessionTTLSeconds) * time.Second).Unix(),
 	}, time.Duration(m.config.SessionTTLSeconds)*time.Second); err != nil {
 		m.writeError(rw, http.StatusInternalServerError, "failed to persist session")
 
@@ -698,11 +700,19 @@ func (m *Middleware) readSession(req *http.Request) (*SessionPayload, bool) {
 		return nil, false
 	}
 
+	if payload.UsernameClaim != m.sessionUsernameClaim() {
+		return nil, false
+	}
+
 	if payload.ExpiresAt < time.Now().Unix() {
 		return nil, false
 	}
 
 	return &payload, true
+}
+
+func (m *Middleware) sessionUsernameClaim() string {
+	return strings.TrimSpace(m.config.KeycloakUsernameClaim)
 }
 
 func (m *Middleware) readState(req *http.Request) (*StatePayload, bool) {
