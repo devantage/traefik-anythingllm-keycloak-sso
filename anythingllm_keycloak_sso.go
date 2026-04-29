@@ -1,6 +1,7 @@
 package traefik_anythingllm_keycloak_sso
 
 import (
+	"bytes"
 	"context"
 	"crypto/hmac"
 	"crypto/rand"
@@ -133,9 +134,11 @@ func New(_ context.Context, next http.Handler, config *Config, name string) (htt
 		config = CreateConfig()
 	}
 
-	keycloakClientSecret := firstNonEmpty(resolveEnv(config.KeycloakClientSecretEnv), config.KeycloakClientSecret)
-	apiKey := firstNonEmpty(resolveEnv(config.AnythingLLMApiKeyEnv), config.AnythingLLMApiKey)
-	sessionSecret := firstNonEmpty(resolveEnv(config.SessionSecretEnv), config.SessionSecret)
+	keycloakClientSecret := resolveValue(config.KeycloakClientSecretEnv, config.KeycloakClientSecret)
+
+	apiKey := resolveValue(config.AnythingLLMApiKeyEnv, config.AnythingLLMApiKey)
+
+	sessionSecret := resolveValue(config.SessionSecretEnv, config.SessionSecret)
 
 	switch {
 	case strings.TrimSpace(config.KeycloakIssuerURL) == "":
@@ -147,9 +150,9 @@ func New(_ context.Context, next http.Handler, config *Config, name string) (htt
 	case strings.TrimSpace(config.AnythingLLMBaseURL) == "":
 		return nil, errors.New("anythingLLMBaseURL is required")
 	case apiKey == "":
-		return nil, errors.New("AnythingLLM API key is required")
+		return nil, errors.New("anythingLLMApiKey is required")
 	case sessionSecret == "":
-		return nil, errors.New("session secret is required")
+		return nil, errors.New("sessionSecret is required")
 	}
 
 	if config.SessionTTLSeconds <= 0 {
@@ -292,13 +295,11 @@ func (m *Middleware) handleCallback(rw http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	username := claimString(userInfo, m.config.KeycloakUsernameClaim)
-
-	email := claimString(userInfo, m.config.KeycloakEmailClaim)
-
-	if username == "" {
-		username = firstNonEmpty(email, claimString(userInfo, "sub"))
-	}
+	username := firstNonEmpty(
+		claimString(userInfo, m.config.KeycloakUsernameClaim),
+		claimString(userInfo, m.config.KeycloakEmailClaim),
+		claimString(userInfo, "sub"),
+	)
 
 	if username == "" {
 		m.writeError(rw, http.StatusForbidden, "keycloak response did not include a usable username")
@@ -362,31 +363,19 @@ func (m *Middleware) exchangeCode(ctx context.Context, code, redirectURI string)
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, m.issuerEndpoint("/protocol/openid-connect/token"), strings.NewReader(form.Encode()))
 
 	if err != nil {
-		return nil, fmt.Errorf("failed to prepare token request: %w", err)
+		return nil, err
 	}
 
 	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
-	response, err := m.client.Do(request)
-
-	if err != nil {
-		return nil, fmt.Errorf("failed to exchange code with keycloak: %w", err)
-	}
-
-	defer response.Body.Close()
-
-	if response.StatusCode >= 300 {
-		return nil, fmt.Errorf("keycloak token endpoint returned %s", response.Status)
-	}
-
 	var token KeycloakExchangeTokenResponse
 
-	if err := json.NewDecoder(response.Body).Decode(&token); err != nil {
-		return nil, fmt.Errorf("failed to decode keycloak token response: %w", err)
+	if err := m.doJSON(request, &token); err != nil {
+		return nil, fmt.Errorf("keycloak token exchange: %w", err)
 	}
 
 	if token.AccessToken == "" {
-		return nil, errors.New("keycloak token response did not include an access token")
+		return nil, errors.New("keycloak token response missing access_token")
 	}
 
 	return &token, nil
@@ -396,27 +385,15 @@ func (m *Middleware) fetchUserInfo(ctx context.Context, accessToken string) (map
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, m.issuerEndpoint("/protocol/openid-connect/userinfo"), nil)
 
 	if err != nil {
-		return nil, fmt.Errorf("failed to prepare userinfo request: %w", err)
+		return nil, err
 	}
 
 	request.Header.Set("Authorization", "Bearer "+accessToken)
 
-	response, err := m.client.Do(request)
-
-	if err != nil {
-		return nil, fmt.Errorf("failed to query keycloak userinfo endpoint: %w", err)
-	}
-
-	defer response.Body.Close()
-
-	if response.StatusCode >= 300 {
-		return nil, fmt.Errorf("keycloak userinfo endpoint returned %s", response.Status)
-	}
-
 	var body map[string]any
 
-	if err := json.NewDecoder(response.Body).Decode(&body); err != nil {
-		return nil, fmt.Errorf("failed to decode keycloak userinfo response: %w", err)
+	if err := m.doJSON(request, &body); err != nil {
+		return nil, fmt.Errorf("keycloak userinfo: %w", err)
 	}
 
 	return body, nil
@@ -442,188 +419,73 @@ func (m *Middleware) ensureAnythingLLMUser(ctx context.Context, username string)
 	password, err := randomToken(24)
 
 	if err != nil {
-		return 0, fmt.Errorf("failed to generate bootstrap password for %q: %w", username, err)
+		return 0, fmt.Errorf("generate password for %q: %w", username, err)
 	}
 
-	payload, err := json.Marshal(map[string]string{
+	payload := map[string]string{
 		"username": username,
 		"password": password,
 		"role":     m.config.AnythingLLMDefaultRole,
-	})
-
-	if err != nil {
-		return 0, fmt.Errorf("failed to encode user creation payload: %w", err)
 	}
-
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, m.anythingURL("/api/v1/admin/users/new"), strings.NewReader(string(payload)))
-
-	if err != nil {
-		return 0, fmt.Errorf("failed to prepare AnythingLLM user creation request: %w", err)
-	}
-
-	request.Header.Set("Authorization", "Bearer "+m.anythingLLMKey)
-	request.Header.Set("Content-Type", "application/json")
-
-	response, err := m.client.Do(request)
-
-	if err != nil {
-		return 0, fmt.Errorf("failed to create AnythingLLM user %q: %w", username, err)
-	}
-
-	defer response.Body.Close()
 
 	var body AnythingCreateUserResponse
 
-	if err := json.NewDecoder(response.Body).Decode(&body); err != nil {
-		return 0, fmt.Errorf("failed to decode AnythingLLM user creation response: %w", err)
+	if err := m.callAnythingLLM(ctx, http.MethodPost, "/api/v1/admin/users/new", payload, &body); err != nil {
+		return 0, fmt.Errorf("create AnythingLLM user %q: %w", username, err)
 	}
 
-	if response.StatusCode >= 300 || body.User == nil {
-		if body.Error == "" {
-			body.Error = response.Status
-		}
-
-		return 0, fmt.Errorf("AnythingLLM rejected user creation for %q: %s", username, body.Error)
+	if body.User == nil {
+		return 0, fmt.Errorf("create AnythingLLM user %q: %s", username, firstNonEmpty(body.Error, "no user returned"))
 	}
 
 	return body.User.ID, nil
 }
 
 func (m *Middleware) listAnythingLLMUsers(ctx context.Context) ([]AnythingLLMUser, error) {
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, m.anythingURL("/api/v1/users"), nil)
-
-	if err != nil {
-		return nil, fmt.Errorf("failed to prepare AnythingLLM users request: %w", err)
-	}
-
-	request.Header.Set("Authorization", "Bearer "+m.anythingLLMKey)
-
-	response, err := m.client.Do(request)
-
-	if err != nil {
-		return nil, fmt.Errorf("failed to list AnythingLLM users: %w", err)
-	}
-
-	defer response.Body.Close()
-
-	if response.StatusCode >= 300 {
-		body, _ := io.ReadAll(io.LimitReader(response.Body, 512))
-
-		return nil, fmt.Errorf("AnythingLLM users endpoint returned %s: %s", response.Status, strings.TrimSpace(string(body)))
-	}
-
 	var body AnythingLLMListUsersResponse
 
-	if err := json.NewDecoder(response.Body).Decode(&body); err != nil {
-		return nil, fmt.Errorf("failed to decode AnythingLLM users response: %w", err)
+	if err := m.callAnythingLLM(ctx, http.MethodGet, "/api/v1/users", nil, &body); err != nil {
+		return nil, fmt.Errorf("list AnythingLLM users: %w", err)
 	}
 
 	return body.Users, nil
 }
 
 func (m *Middleware) listAnythingLLMWorkspaces(ctx context.Context) ([]AnythingLLMWorkspace, error) {
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, m.anythingURL("/api/v1/workspaces"), nil)
-
-	if err != nil {
-		return nil, fmt.Errorf("failed to prepare AnythingLLM workspaces request: %w", err)
-	}
-
-	request.Header.Set("Authorization", "Bearer "+m.anythingLLMKey)
-
-	response, err := m.client.Do(request)
-
-	if err != nil {
-		return nil, fmt.Errorf("failed to list AnythingLLM workspaces: %w", err)
-	}
-
-	defer response.Body.Close()
-
-	if response.StatusCode >= 300 {
-		body, _ := io.ReadAll(io.LimitReader(response.Body, 512))
-
-		return nil, fmt.Errorf("AnythingLLM workspaces endpoint returned %s: %s", response.Status, strings.TrimSpace(string(body)))
-	}
-
 	var body AnythingLLMWorkspacesResponse
 
-	if err := json.NewDecoder(response.Body).Decode(&body); err != nil {
-		return nil, fmt.Errorf("failed to decode AnythingLLM workspaces response: %w", err)
+	if err := m.callAnythingLLM(ctx, http.MethodGet, "/api/v1/workspaces", nil, &body); err != nil {
+		return nil, fmt.Errorf("list AnythingLLM workspaces: %w", err)
 	}
 
 	return body.Workspaces, nil
 }
 
 func (m *Middleware) listAnythingLLMWorkspaceUsers(ctx context.Context, workspaceID int) ([]AnythingLLMWorkspaceUser, error) {
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, m.anythingURL(fmt.Sprintf("/api/v1/admin/workspaces/%d/users", workspaceID)), nil)
-
-	if err != nil {
-		return nil, fmt.Errorf("failed to prepare AnythingLLM workspace users request: %w", err)
-	}
-
-	request.Header.Set("Authorization", "Bearer "+m.anythingLLMKey)
-
-	response, err := m.client.Do(request)
-
-	if err != nil {
-		return nil, fmt.Errorf("failed to list AnythingLLM workspace users: %w", err)
-	}
-
-	defer response.Body.Close()
-
-	if response.StatusCode >= 300 {
-		body, _ := io.ReadAll(io.LimitReader(response.Body, 512))
-
-		return nil, fmt.Errorf("AnythingLLM workspace users endpoint returned %s: %s", response.Status, strings.TrimSpace(string(body)))
-	}
-
 	var body AnythingLLMWorkspaceUsersResponse
 
-	if err := json.NewDecoder(response.Body).Decode(&body); err != nil {
-		return nil, fmt.Errorf("failed to decode AnythingLLM workspace users response: %w", err)
+	path := fmt.Sprintf("/api/v1/admin/workspaces/%d/users", workspaceID)
+
+	if err := m.callAnythingLLM(ctx, http.MethodGet, path, nil, &body); err != nil {
+		return nil, fmt.Errorf("list workspace %d users: %w", workspaceID, err)
 	}
 
 	return body.Users, nil
 }
 
 func (m *Middleware) addUserToAnythingLLMWorkspace(ctx context.Context, workspaceSlug string, userID int) error {
-	payload, err := json.Marshal(map[string]any{
-		"userIds": []int{userID},
-		"reset":   false,
-	})
-
-	if err != nil {
-		return fmt.Errorf("failed to encode workspace membership payload for %q: %w", workspaceSlug, err)
-	}
-
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, m.anythingURL("/api/v1/admin/workspaces/"+url.PathEscape(workspaceSlug)+"/manage-users"), strings.NewReader(string(payload)))
-
-	if err != nil {
-		return fmt.Errorf("failed to prepare AnythingLLM workspace membership request for %q: %w", workspaceSlug, err)
-	}
-
-	request.Header.Set("Authorization", "Bearer "+m.anythingLLMKey)
-	request.Header.Set("Content-Type", "application/json")
-
-	response, err := m.client.Do(request)
-
-	if err != nil {
-		return fmt.Errorf("failed to update AnythingLLM workspace membership for %q: %w", workspaceSlug, err)
-	}
-
-	defer response.Body.Close()
+	payload := map[string]any{"userIds": []int{userID}, "reset": false}
 
 	var body AnythingLLMWorkspaceManageUsersResponse
 
-	if err := json.NewDecoder(response.Body).Decode(&body); err != nil {
-		return fmt.Errorf("failed to decode AnythingLLM workspace membership response for %q: %w", workspaceSlug, err)
+	path := "/api/v1/admin/workspaces/" + url.PathEscape(workspaceSlug) + "/manage-users"
+
+	if err := m.callAnythingLLM(ctx, http.MethodPost, path, payload, &body); err != nil {
+		return fmt.Errorf("add user to workspace %q: %w", workspaceSlug, err)
 	}
 
-	if response.StatusCode >= 300 || !body.Success {
-		if body.Error == "" {
-			body.Error = response.Status
-		}
-
-		return fmt.Errorf("AnythingLLM rejected workspace membership update for %q: %s", workspaceSlug, body.Error)
+	if !body.Success {
+		return fmt.Errorf("workspace %q rejected membership update: %s", workspaceSlug, firstNonEmpty(body.Error, "unknown error"))
 	}
 
 	return nil
@@ -674,36 +536,16 @@ func (m *Middleware) syncDefaultWorkspaces(ctx context.Context, userID int) erro
 }
 
 func (m *Middleware) issueAnythingLLMToken(ctx context.Context, userID int) (string, error) {
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, m.anythingURL(fmt.Sprintf("/api/v1/users/%d/issue-auth-token", userID)), nil)
-
-	if err != nil {
-		return "", fmt.Errorf("failed to prepare AnythingLLM auth token request: %w", err)
-	}
-
-	request.Header.Set("Authorization", "Bearer "+m.anythingLLMKey)
-
-	response, err := m.client.Do(request)
-
-	if err != nil {
-		return "", fmt.Errorf("failed to issue AnythingLLM auth token: %w", err)
-	}
-
-	defer response.Body.Close()
-
-	if response.StatusCode >= 300 {
-		body, _ := io.ReadAll(io.LimitReader(response.Body, 512))
-
-		return "", fmt.Errorf("AnythingLLM issue-auth-token returned %s: %s", response.Status, strings.TrimSpace(string(body)))
-	}
-
 	var body AnythingLLMIssueTokenResponse
 
-	if err := json.NewDecoder(response.Body).Decode(&body); err != nil {
-		return "", fmt.Errorf("failed to decode AnythingLLM auth token response: %w", err)
+	path := fmt.Sprintf("/api/v1/users/%d/issue-auth-token", userID)
+
+	if err := m.callAnythingLLM(ctx, http.MethodGet, path, nil, &body); err != nil {
+		return "", fmt.Errorf("issue AnythingLLM auth token: %w", err)
 	}
 
 	if body.LoginPath == "" {
-		return "", errors.New("AnythingLLM auth token response did not include a loginPath")
+		return "", errors.New("AnythingLLM auth token response missing loginPath")
 	}
 
 	return body.LoginPath, nil
@@ -813,6 +655,56 @@ func (m *Middleware) clearCookie(rw http.ResponseWriter, name string) {
 	})
 }
 
+func (m *Middleware) doJSON(req *http.Request, target any) error {
+	response, err := m.client.Do(req)
+
+	if err != nil {
+		return err
+	}
+
+	defer response.Body.Close()
+
+	if response.StatusCode >= 300 {
+		body, _ := io.ReadAll(io.LimitReader(response.Body, 512))
+
+		return fmt.Errorf("HTTP %s: %s", response.Status, strings.TrimSpace(string(body)))
+	}
+
+	if target == nil {
+		return nil
+	}
+
+	return json.NewDecoder(response.Body).Decode(target)
+}
+
+func (m *Middleware) callAnythingLLM(ctx context.Context, method, path string, body, target any) error {
+	var reader io.Reader
+
+	if body != nil {
+		raw, err := json.Marshal(body)
+
+		if err != nil {
+			return err
+		}
+
+		reader = bytes.NewReader(raw)
+	}
+
+	request, err := http.NewRequestWithContext(ctx, method, m.anythingURL(path), reader)
+
+	if err != nil {
+		return err
+	}
+
+	request.Header.Set("Authorization", "Bearer "+m.anythingLLMKey)
+
+	if body != nil {
+		request.Header.Set("Content-Type", "application/json")
+	}
+
+	return m.doJSON(request, target)
+}
+
 func (m *Middleware) sign(payload []byte) []byte {
 	mac := hmac.New(sha256.New, m.sessionSecret)
 
@@ -881,12 +773,14 @@ func claimString(payload map[string]any, key string) string {
 	return strings.TrimSpace(text)
 }
 
-func resolveEnv(name string) string {
-	if name == "" {
-		return ""
+func resolveValue(envName, value string) string {
+	if envName != "" {
+		if v := strings.TrimSpace(os.Getenv(envName)); v != "" {
+			return v
+		}
 	}
 
-	return strings.TrimSpace(os.Getenv(name))
+	return strings.TrimSpace(value)
 }
 
 func randomToken(size int) (string, error) {
