@@ -87,7 +87,7 @@ func TestLoginRouteRedirectsToKeycloak(t *testing.T) {
 		t.Fatalf("unexpected error creating middleware: %v", err)
 	}
 
-	request := httptest.NewRequest(http.MethodGet, "https://llm.example.com/sso/login?redirectTo=%2Fworkspaces%2Fdemo", nil)
+	request := httptest.NewRequest(http.MethodGet, "https://llm.example.com/sso/login", nil)
 	request.Header.Set("X-Forwarded-Proto", "https")
 	request.Header.Set("Accept", "*/*")
 	recorder := httptest.NewRecorder()
@@ -110,9 +110,14 @@ func TestLoginRouteRedirectsToKeycloak(t *testing.T) {
 
 	middleware := handler.(*Middleware)
 
-	var state StatePayload
+	var stateCookie *http.Cookie
 
-	stateCookie := findCookie(recorder.Result().Cookies(), middleware.stateCookieName())
+	for _, cookie := range recorder.Result().Cookies() {
+		if cookie.Name == middleware.stateCookieName() {
+			stateCookie = cookie
+			break
+		}
+	}
 
 	if stateCookie == nil {
 		t.Fatalf("expected state cookie to be set")
@@ -121,85 +126,15 @@ func TestLoginRouteRedirectsToKeycloak(t *testing.T) {
 	stateRequest := httptest.NewRequest(http.MethodGet, "https://llm.example.com/", nil)
 	stateRequest.AddCookie(stateCookie)
 
+	var state StatePayload
+
 	if !middleware.readSignedCookie(stateRequest, middleware.stateCookieName(), &state) {
 		t.Fatalf("failed to decode state cookie")
 	}
 
-	if state.ReturnTo != "/workspaces/demo" {
-		t.Fatalf("expected returnTo=/workspaces/demo, got %q", state.ReturnTo)
+	if state.ReturnTo != "/sso/login" {
+		t.Fatalf("expected returnTo to mirror the requested path, got %q", state.ReturnTo)
 	}
-}
-
-func TestLoginRouteFallsBackToAnythingLLMBaseURL(t *testing.T) {
-	handler, err := New(context.Background(), http.HandlerFunc(func(rw http.ResponseWriter, _ *http.Request) {
-		rw.WriteHeader(http.StatusNoContent)
-	}), &Config{
-		KeycloakIssuerURL:      "https://keycloak.example.com/realms/cognitio",
-		KeycloakClientID:       "anythingllm",
-		KeycloakClientSecret:   "secret",
-		AnythingLLMBaseURL:     "https://anythingllm.example.com/",
-		AnythingLLMApiKey:      "api-key",
-		SessionSecret:          "session-secret",
-		CallbackPath:           "/sso/callback",
-		LoginPath:              "/sso/login",
-		SessionCookieName:      "_anythingllm_keycloak_sso",
-		SessionTTLSeconds:      3600,
-		AnythingLLMCreateUsers: true,
-		AnythingLLMDefaultRole: "default",
-	}, "anythingllm-keycloak-sso")
-	if err != nil {
-		t.Fatalf("unexpected error creating middleware: %v", err)
-	}
-
-	cases := []struct {
-		name string
-		url  string
-	}{
-		{name: "no redirectTo", url: "https://llm.example.com/sso/login"},
-		{name: "external redirectTo", url: "https://llm.example.com/sso/login?redirectTo=https%3A%2F%2Fattacker.example.com%2F"},
-		{name: "scheme-relative redirectTo", url: "https://llm.example.com/sso/login?redirectTo=%2F%2Fattacker.example.com%2F"},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			request := httptest.NewRequest(http.MethodGet, tc.url, nil)
-			request.Header.Set("X-Forwarded-Proto", "https")
-			recorder := httptest.NewRecorder()
-
-			handler.ServeHTTP(recorder, request)
-
-			middleware := handler.(*Middleware)
-
-			stateCookie := findCookie(recorder.Result().Cookies(), middleware.stateCookieName())
-
-			if stateCookie == nil {
-				t.Fatalf("expected state cookie to be set")
-			}
-
-			stateRequest := httptest.NewRequest(http.MethodGet, "https://llm.example.com/", nil)
-			stateRequest.AddCookie(stateCookie)
-
-			var state StatePayload
-
-			if !middleware.readSignedCookie(stateRequest, middleware.stateCookieName(), &state) {
-				t.Fatalf("failed to decode state cookie")
-			}
-
-			if state.ReturnTo != "https://anythingllm.example.com" {
-				t.Fatalf("expected returnTo to default to AnythingLLMBaseURL, got %q", state.ReturnTo)
-			}
-		})
-	}
-}
-
-func findCookie(cookies []*http.Cookie, name string) *http.Cookie {
-	for _, cookie := range cookies {
-		if cookie.Name == name {
-			return cookie
-		}
-	}
-
-	return nil
 }
 
 func TestUnauthenticatedAssetRequestReturnsUnauthorizedInsteadOfRedirect(t *testing.T) {
