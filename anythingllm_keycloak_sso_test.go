@@ -23,20 +23,21 @@ func TestRedirectsToKeycloakWhenSessionIsMissing(t *testing.T) {
 	handler, err := New(context.Background(), http.HandlerFunc(func(rw http.ResponseWriter, _ *http.Request) {
 		rw.WriteHeader(http.StatusNoContent)
 	}), &Config{
-		KeycloakIssuerURL:      "https://keycloak.example.com/realms/cognitio",
-		KeycloakClientID:       "anythingllm",
-		KeycloakClientSecret:   "secret",
-		KeycloakScopes:         "openid profile email",
-		KeycloakUsernameClaim:  "preferred_username",
-		KeycloakEmailClaim:     "email",
-		AnythingLLMBaseURL:     "http://anythingllm.cognitio.svc.cluster.local:3001",
-		AnythingLLMApiKey:      "api-key",
-		AnythingLLMCreateUsers: true,
-		AnythingLLMDefaultRole: "default",
-		SessionSecret:          "session-secret",
-		CallbackPath:           "/sso/callback",
-		SessionCookieName:      "_anythingllm_keycloak_sso",
-		SessionTTLSeconds:      3600,
+		KeycloakIssuerURL:       "https://keycloak.example.com/realms/cognitio",
+		KeycloakClientID:         "anythingllm",
+		KeycloakClientSecret:     "secret",
+		KeycloakScopes:           "openid profile email",
+		KeycloakUsernameClaim:    "preferred_username",
+		KeycloakEmailClaim:       "email",
+		AnythingLLMBaseURL:       "http://anythingllm.cognitio.svc.cluster.local:3001",
+		AnythingLLMPublicBaseURL: "https://llm.example.com",
+		AnythingLLMApiKey:        "api-key",
+		AnythingLLMCreateUsers:   true,
+		AnythingLLMDefaultRole:   "default",
+		SessionSecret:            "session-secret",
+		CallbackPath:             "/sso/callback",
+		SessionCookieName:        "_anythingllm_keycloak_sso",
+		SessionTTLSeconds:        3600,
 	}, "anythingllm-keycloak-sso")
 	if err != nil {
 		t.Fatalf("unexpected error creating middleware: %v", err)
@@ -70,18 +71,19 @@ func TestLoginRouteRedirectsToKeycloak(t *testing.T) {
 	handler, err := New(context.Background(), http.HandlerFunc(func(rw http.ResponseWriter, _ *http.Request) {
 		rw.WriteHeader(http.StatusNoContent)
 	}), &Config{
-		KeycloakIssuerURL:      "https://keycloak.example.com/realms/cognitio",
-		KeycloakClientID:       "anythingllm",
-		KeycloakClientSecret:   "secret",
-		AnythingLLMBaseURL:     "http://anythingllm.cognitio.svc.cluster.local:3001",
-		AnythingLLMApiKey:      "api-key",
-		SessionSecret:          "session-secret",
-		CallbackPath:           "/sso/callback",
-		LoginPath:              "/sso/login",
-		SessionCookieName:      "_anythingllm_keycloak_sso",
-		SessionTTLSeconds:      3600,
-		AnythingLLMCreateUsers: true,
-		AnythingLLMDefaultRole: "default",
+		KeycloakIssuerURL:        "https://keycloak.example.com/realms/cognitio",
+		KeycloakClientID:         "anythingllm",
+		KeycloakClientSecret:     "secret",
+		AnythingLLMBaseURL:       "http://anythingllm.cognitio.svc.cluster.local:3001",
+		AnythingLLMPublicBaseURL: "https://llm.example.com",
+		AnythingLLMApiKey:        "api-key",
+		SessionSecret:            "session-secret",
+		CallbackPath:             "/sso/callback",
+		LoginPath:                "/sso/login",
+		SessionCookieName:        "_anythingllm_keycloak_sso",
+		SessionTTLSeconds:        3600,
+		AnythingLLMCreateUsers:   true,
+		AnythingLLMDefaultRole:   "default",
 	}, "anythingllm-keycloak-sso")
 	if err != nil {
 		t.Fatalf("unexpected error creating middleware: %v", err)
@@ -315,19 +317,69 @@ func TestReadSessionRejectsLegacySessionWithoutUsernameClaim(t *testing.T) {
 	}
 }
 
+func TestAnythingPublicURLPrefersExplicitPublicConfig(t *testing.T) {
+	handler, err := New(context.Background(), http.HandlerFunc(func(rw http.ResponseWriter, _ *http.Request) {
+		rw.WriteHeader(http.StatusNoContent)
+	}), &Config{
+		KeycloakIssuerURL:          "https://keycloak.example.com/realms/cognitio",
+		KeycloakClientID:           "anythingllm",
+		KeycloakClientSecret:       "secret",
+		AnythingLLMBaseURL: "http://anythingllm.cognitio.svc.cluster.local:3001",
+		AnythingLLMPublicBaseURL:   "https://llm.example.com/",
+		AnythingLLMApiKey:          "api-key",
+		SessionSecret:              "session-secret",
+	}, "anythingllm-keycloak-sso")
+	if err != nil {
+		t.Fatalf("unexpected error creating middleware: %v", err)
+	}
+
+	middleware := handler.(*Middleware)
+
+	if got := middleware.anythingPublicURL("/sso/callback"); got != "https://llm.example.com/sso/callback" {
+		t.Fatalf("expected anythingPublicURL to use AnythingLLMPublicBaseURL with trailing slash trimmed, got %q", got)
+	}
+
+	if got := middleware.anythingPublicURL(""); got != "https://llm.example.com" {
+		t.Fatalf("expected anythingPublicURL to return the bare base URL when path is empty, got %q", got)
+	}
+}
+
+func TestAnythingPublicURLFallsBackToAnythingLLMBaseURL(t *testing.T) {
+	handler, err := New(context.Background(), http.HandlerFunc(func(rw http.ResponseWriter, _ *http.Request) {
+		rw.WriteHeader(http.StatusNoContent)
+	}), &Config{
+		KeycloakIssuerURL:          "https://keycloak.example.com/realms/cognitio",
+		KeycloakClientID:           "anythingllm",
+		KeycloakClientSecret:       "secret",
+		AnythingLLMBaseURL: "http://anythingllm.cognitio.svc.cluster.local:3001/",
+		AnythingLLMApiKey:          "api-key",
+		SessionSecret:              "session-secret",
+	}, "anythingllm-keycloak-sso")
+	if err != nil {
+		t.Fatalf("unexpected error creating middleware: %v", err)
+	}
+
+	middleware := handler.(*Middleware)
+
+	if got := middleware.anythingPublicURL("/api/v1/users"); got != "http://anythingllm.cognitio.svc.cluster.local:3001/api/v1/users" {
+		t.Fatalf("expected anythingPublicURL to fall back to AnythingLLMBaseURL with appended path, got %q", got)
+	}
+}
+
 func TestLogoutRedirectsToKeycloakLogout(t *testing.T) {
 	handler, err := New(context.Background(), http.HandlerFunc(func(rw http.ResponseWriter, _ *http.Request) {
 		rw.WriteHeader(http.StatusNoContent)
 	}), &Config{
-		KeycloakIssuerURL:    "https://keycloak.example.com/realms/cognitio",
-		KeycloakClientID:     "anythingllm",
-		KeycloakClientSecret: "secret",
-		AnythingLLMBaseURL:   "http://anythingllm.cognitio.svc.cluster.local:3001",
-		AnythingLLMApiKey:    "api-key",
-		LogoutPath:           "/logout",
-		SessionCookieName:    "_anythingllm_keycloak_sso",
-		SessionCookieSecure:  true,
-		SessionSecret:        "session-secret",
+		KeycloakIssuerURL:          "https://keycloak.example.com/realms/cognitio",
+		KeycloakClientID:           "anythingllm",
+		KeycloakClientSecret:       "secret",
+		AnythingLLMBaseURL: "http://anythingllm.cognitio.svc.cluster.local:3001",
+		AnythingLLMPublicBaseURL:   "https://llm.example.com",
+		AnythingLLMApiKey:          "api-key",
+		LogoutPath:                 "/logout",
+		SessionCookieName:          "_anythingllm_keycloak_sso",
+		SessionCookieSecure:        true,
+		SessionSecret:              "session-secret",
 	}, "anythingllm-keycloak-sso")
 	if err != nil {
 		t.Fatalf("unexpected error creating middleware: %v", err)

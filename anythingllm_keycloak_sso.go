@@ -27,6 +27,7 @@ type Config struct {
 	KeycloakUsernameClaim             string   `json:"keycloakUsernameClaim,omitempty"`
 	KeycloakEmailClaim                string   `json:"keycloakEmailClaim,omitempty"`
 	AnythingLLMBaseURL                string   `json:"anythingLLMBaseURL,omitempty"`
+	AnythingLLMPublicBaseURL          string   `json:"anythingLLMPublicBaseURL,omitempty"`
 	AnythingLLMApiKey                 string   `json:"anythingLLMApiKey,omitempty"`
 	AnythingLLMApiKeyEnv              string   `json:"anythingLLMApiKeyEnv,omitempty"`
 	AnythingLLMCreateUsers            bool     `json:"anythingLLMCreateUsers,omitempty"`
@@ -244,7 +245,7 @@ func (m *Middleware) startLogin(rw http.ResponseWriter, req *http.Request, retur
 	query.Set("client_id", m.config.KeycloakClientID)
 	query.Set("response_type", "code")
 	query.Set("scope", m.config.KeycloakScopes)
-	query.Set("redirect_uri", m.externalBaseURL(req)+m.config.CallbackPath)
+	query.Set("redirect_uri", m.anythingPublicURL(m.config.CallbackPath))
 	query.Set("state", nonce)
 
 	http.Redirect(rw, req, m.issuerEndpoint("/protocol/openid-connect/auth")+"?"+query.Encode(), http.StatusFound)
@@ -274,7 +275,7 @@ func (m *Middleware) handleCallback(rw http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	tokenResponse, err := m.exchangeCode(req.Context(), code, m.externalBaseURL(req)+m.config.CallbackPath)
+	tokenResponse, err := m.exchangeCode(req.Context(), code, m.anythingPublicURL(m.config.CallbackPath))
 
 	if err != nil {
 		m.writeError(rw, http.StatusBadGateway, err.Error())
@@ -330,7 +331,7 @@ func (m *Middleware) handleCallback(rw http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	redirectURL := m.externalBaseURL(req) + withRedirectTo(loginPath, state.ReturnTo)
+	redirectURL := m.anythingPublicURL(withRedirectTo(loginPath, state.ReturnTo))
 
 	http.Redirect(rw, req, redirectURL, http.StatusFound)
 }
@@ -343,7 +344,7 @@ func (m *Middleware) handleLogout(rw http.ResponseWriter, req *http.Request) {
 	query := url.Values{}
 
 	query.Set("client_id", m.config.KeycloakClientID)
-	query.Set("post_logout_redirect_uri", m.externalBaseURL(req)+"/")
+	query.Set("post_logout_redirect_uri", m.anythingPublicURL("/"))
 
 	http.Redirect(rw, req, m.issuerEndpoint("/protocol/openid-connect/logout")+"?"+query.Encode(), http.StatusFound)
 }
@@ -827,24 +828,14 @@ func (m *Middleware) anythingURL(path string) string {
 	return strings.TrimRight(m.config.AnythingLLMBaseURL, "/") + path
 }
 
-func (m *Middleware) externalBaseURL(req *http.Request) string {
-	scheme := req.Header.Get("X-Forwarded-Proto")
+func (m *Middleware) anythingPublicURL(path string) string {
+	base := strings.TrimSpace(m.config.AnythingLLMPublicBaseURL)
 
-	if scheme == "" {
-		if req.TLS != nil {
-			scheme = "https"
-		} else {
-			scheme = "http"
-		}
+	if base == "" {
+		base = m.config.AnythingLLMBaseURL
 	}
 
-	host := req.Header.Get("X-Forwarded-Host")
-
-	if host == "" {
-		host = req.Host
-	}
-
-	return scheme + "://" + host
+	return strings.TrimRight(base, "/") + path
 }
 
 func (m *Middleware) writeError(rw http.ResponseWriter, status int, message string) {
