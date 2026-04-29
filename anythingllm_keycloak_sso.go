@@ -34,6 +34,8 @@ type Config struct {
 	AnythingLLMCreateUsers            bool     `json:"anythingLLMCreateUsers,omitempty"`
 	AnythingLLMDefaultRole            string   `json:"anythingLLMDefaultRole,omitempty"`
 	AnythingLLMDefaultWorkspacesSlugs []string `json:"anythingLLMDefaultWorkspacesSlugs,omitempty"`
+	AnythingLLMLogoutDetectionPath    string   `json:"anythingLLMLogoutDetectionPath,omitempty"`
+	AnythingLLMLogoutAction           string   `json:"anythingLLMLogoutAction,omitempty"`
 	CallbackPath                      string   `json:"callbackPath,omitempty"`
 	LoginPath                         string   `json:"loginPath,omitempty"`
 	LogoutPath                        string   `json:"logoutPath,omitempty"`
@@ -115,17 +117,19 @@ type AnythingLLMWorkspaceManageUsersResponse struct {
 
 func CreateConfig() *Config {
 	return &Config{
-		KeycloakScopes:         "openid profile email",
-		KeycloakUsernameClaim:  "preferred_username",
-		KeycloakEmailClaim:     "email",
-		AnythingLLMCreateUsers: true,
-		AnythingLLMDefaultRole: "default",
-		CallbackPath:           "/sso/callback",
-		LoginPath:              "/sso/login",
-		LogoutPath:             "/sso/logout",
-		SessionCookieName:      "_anythingllm_keycloak_sso",
-		SessionCookieSecure:    true,
-		SessionTTLSeconds:      3600,
+		KeycloakScopes:                 "openid profile email",
+		KeycloakUsernameClaim:          "preferred_username",
+		KeycloakEmailClaim:             "email",
+		AnythingLLMCreateUsers:         true,
+		AnythingLLMDefaultRole:         "default",
+		AnythingLLMLogoutDetectionPath: "/login",
+		AnythingLLMLogoutAction:        "keycloak",
+		CallbackPath:                   "/sso/callback",
+		LoginPath:                      "/sso/login",
+		LogoutPath:                     "/sso/logout",
+		SessionCookieName:              "_anythingllm_keycloak_sso",
+		SessionCookieSecure:            true,
+		SessionTTLSeconds:              3600,
 	}
 }
 
@@ -171,6 +175,18 @@ func New(_ context.Context, next http.Handler, config *Config, name string) (htt
 		config.LogoutPath = "/" + config.LogoutPath
 	}
 
+	if config.AnythingLLMLogoutDetectionPath != "" && !strings.HasPrefix(config.AnythingLLMLogoutDetectionPath, "/") {
+		config.AnythingLLMLogoutDetectionPath = "/" + config.AnythingLLMLogoutDetectionPath
+	}
+
+	switch config.AnythingLLMLogoutAction {
+	case "", "keycloak":
+		config.AnythingLLMLogoutAction = "keycloak"
+	case "silent":
+	default:
+		return nil, fmt.Errorf("anythingLLMLogoutAction must be %q or %q", "keycloak", "silent")
+	}
+
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 
 	if config.InsecureSkipTLSVerify {
@@ -205,6 +221,12 @@ func (m *Middleware) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 	}
 
 	if _, ok := m.readSession(req); ok {
+		if m.config.AnythingLLMLogoutDetectionPath != "" && req.URL.Path == m.config.AnythingLLMLogoutDetectionPath {
+			m.handleAnythingLLMLogout(rw, req)
+
+			return
+		}
+
 		m.next.ServeHTTP(rw, req)
 
 		return
@@ -217,6 +239,18 @@ func (m *Middleware) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 	}
 
 	m.startLogin(rw, req)
+}
+
+func (m *Middleware) handleAnythingLLMLogout(rw http.ResponseWriter, req *http.Request) {
+	if m.config.AnythingLLMLogoutAction == "silent" {
+		m.clearCookie(rw, m.config.SessionCookieName)
+		m.clearCookie(rw, m.stateCookieName())
+		m.startLogin(rw, req)
+
+		return
+	}
+
+	m.handleLogout(rw, req)
 }
 
 func (m *Middleware) handleLogin(rw http.ResponseWriter, req *http.Request) {
