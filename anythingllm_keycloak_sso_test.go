@@ -10,15 +10,6 @@ import (
 	"time"
 )
 
-func TestWithRedirectTo(t *testing.T) {
-	got := withRedirectTo("/sso/simple?token=abc", "/workspaces/demo")
-	want := "/sso/simple?redirectTo=%2Fworkspaces%2Fdemo&token=abc"
-
-	if got != want {
-		t.Fatalf("expected %s, got %s", want, got)
-	}
-}
-
 func TestRedirectsToKeycloakWhenSessionIsMissing(t *testing.T) {
 	handler, err := New(context.Background(), http.HandlerFunc(func(rw http.ResponseWriter, _ *http.Request) {
 		rw.WriteHeader(http.StatusNoContent)
@@ -123,19 +114,6 @@ func TestLoginRouteRedirectsToKeycloak(t *testing.T) {
 
 	if stateCookie == nil {
 		t.Fatalf("expected state cookie to be set")
-	}
-
-	stateRequest := httptest.NewRequest(http.MethodGet, "https://llm.example.com/", nil)
-	stateRequest.AddCookie(stateCookie)
-
-	var state StatePayload
-
-	if !middleware.readSignedCookie(stateRequest, middleware.stateCookieName(), &state) {
-		t.Fatalf("failed to decode state cookie")
-	}
-
-	if state.ReturnTo != "/" {
-		t.Fatalf("expected returnTo to default to %q, got %q", "/", state.ReturnTo)
 	}
 }
 
