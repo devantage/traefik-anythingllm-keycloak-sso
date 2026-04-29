@@ -66,6 +66,142 @@ func TestRedirectsToKeycloakWhenSessionIsMissing(t *testing.T) {
 	}
 }
 
+func TestLoginRouteRedirectsToKeycloak(t *testing.T) {
+	handler, err := New(context.Background(), http.HandlerFunc(func(rw http.ResponseWriter, _ *http.Request) {
+		rw.WriteHeader(http.StatusNoContent)
+	}), &Config{
+		KeycloakIssuerURL:      "https://keycloak.example.com/realms/cognitio",
+		KeycloakClientID:       "anythingllm",
+		KeycloakClientSecret:   "secret",
+		AnythingLLMBaseURL:     "http://anythingllm.cognitio.svc.cluster.local:3001",
+		AnythingLLMApiKey:      "api-key",
+		SessionSecret:          "session-secret",
+		CallbackPath:           "/sso/callback",
+		LoginPath:              "/sso/login",
+		SessionCookieName:      "_anythingllm_keycloak_sso",
+		SessionTTLSeconds:      3600,
+		AnythingLLMCreateUsers: true,
+		AnythingLLMDefaultRole: "default",
+	}, "anythingllm-keycloak-sso")
+	if err != nil {
+		t.Fatalf("unexpected error creating middleware: %v", err)
+	}
+
+	request := httptest.NewRequest(http.MethodGet, "https://llm.example.com/sso/login?redirectTo=%2Fworkspaces%2Fdemo", nil)
+	request.Header.Set("X-Forwarded-Proto", "https")
+	request.Header.Set("Accept", "*/*")
+	recorder := httptest.NewRecorder()
+
+	handler.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusFound {
+		t.Fatalf("expected status %d, got %d", http.StatusFound, recorder.Code)
+	}
+
+	location := recorder.Header().Get("Location")
+
+	if !strings.HasPrefix(location, "https://keycloak.example.com/realms/cognitio/protocol/openid-connect/auth?") {
+		t.Fatalf("unexpected redirect location: %s", location)
+	}
+
+	if !strings.Contains(location, "redirect_uri=https%3A%2F%2Fllm.example.com%2Fsso%2Fcallback") {
+		t.Fatalf("expected redirect_uri in keycloak URL, got %s", location)
+	}
+
+	middleware := handler.(*Middleware)
+
+	var state StatePayload
+
+	stateCookie := findCookie(recorder.Result().Cookies(), middleware.stateCookieName())
+
+	if stateCookie == nil {
+		t.Fatalf("expected state cookie to be set")
+	}
+
+	stateRequest := httptest.NewRequest(http.MethodGet, "https://llm.example.com/", nil)
+	stateRequest.AddCookie(stateCookie)
+
+	if !middleware.readSignedCookie(stateRequest, middleware.stateCookieName(), &state) {
+		t.Fatalf("failed to decode state cookie")
+	}
+
+	if state.ReturnTo != "/workspaces/demo" {
+		t.Fatalf("expected returnTo=/workspaces/demo, got %q", state.ReturnTo)
+	}
+}
+
+func TestLoginRouteFallsBackToAnythingLLMBaseURL(t *testing.T) {
+	handler, err := New(context.Background(), http.HandlerFunc(func(rw http.ResponseWriter, _ *http.Request) {
+		rw.WriteHeader(http.StatusNoContent)
+	}), &Config{
+		KeycloakIssuerURL:      "https://keycloak.example.com/realms/cognitio",
+		KeycloakClientID:       "anythingllm",
+		KeycloakClientSecret:   "secret",
+		AnythingLLMBaseURL:     "https://anythingllm.example.com/",
+		AnythingLLMApiKey:      "api-key",
+		SessionSecret:          "session-secret",
+		CallbackPath:           "/sso/callback",
+		LoginPath:              "/sso/login",
+		SessionCookieName:      "_anythingllm_keycloak_sso",
+		SessionTTLSeconds:      3600,
+		AnythingLLMCreateUsers: true,
+		AnythingLLMDefaultRole: "default",
+	}, "anythingllm-keycloak-sso")
+	if err != nil {
+		t.Fatalf("unexpected error creating middleware: %v", err)
+	}
+
+	cases := []struct {
+		name string
+		url  string
+	}{
+		{name: "no redirectTo", url: "https://llm.example.com/sso/login"},
+		{name: "external redirectTo", url: "https://llm.example.com/sso/login?redirectTo=https%3A%2F%2Fattacker.example.com%2F"},
+		{name: "scheme-relative redirectTo", url: "https://llm.example.com/sso/login?redirectTo=%2F%2Fattacker.example.com%2F"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			request := httptest.NewRequest(http.MethodGet, tc.url, nil)
+			request.Header.Set("X-Forwarded-Proto", "https")
+			recorder := httptest.NewRecorder()
+
+			handler.ServeHTTP(recorder, request)
+
+			middleware := handler.(*Middleware)
+
+			stateCookie := findCookie(recorder.Result().Cookies(), middleware.stateCookieName())
+
+			if stateCookie == nil {
+				t.Fatalf("expected state cookie to be set")
+			}
+
+			stateRequest := httptest.NewRequest(http.MethodGet, "https://llm.example.com/", nil)
+			stateRequest.AddCookie(stateCookie)
+
+			var state StatePayload
+
+			if !middleware.readSignedCookie(stateRequest, middleware.stateCookieName(), &state) {
+				t.Fatalf("failed to decode state cookie")
+			}
+
+			if state.ReturnTo != "https://anythingllm.example.com" {
+				t.Fatalf("expected returnTo to default to AnythingLLMBaseURL, got %q", state.ReturnTo)
+			}
+		})
+	}
+}
+
+func findCookie(cookies []*http.Cookie, name string) *http.Cookie {
+	for _, cookie := range cookies {
+		if cookie.Name == name {
+			return cookie
+		}
+	}
+
+	return nil
+}
+
 func TestUnauthenticatedAssetRequestReturnsUnauthorizedInsteadOfRedirect(t *testing.T) {
 	handler, err := New(context.Background(), http.HandlerFunc(func(rw http.ResponseWriter, _ *http.Request) {
 		rw.WriteHeader(http.StatusNoContent)

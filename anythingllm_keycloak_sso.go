@@ -33,6 +33,7 @@ type Config struct {
 	AnythingLLMDefaultRole            string   `json:"anythingLLMDefaultRole,omitempty"`
 	AnythingLLMDefaultWorkspacesSlugs []string `json:"anythingLLMDefaultWorkspacesSlugs,omitempty"`
 	CallbackPath                      string   `json:"callbackPath,omitempty"`
+	LoginPath                         string   `json:"loginPath,omitempty"`
 	LogoutPath                        string   `json:"logoutPath,omitempty"`
 	SessionCookieName                 string   `json:"sessionCookieName,omitempty"`
 	SessionCookieSecure               bool     `json:"sessionCookieSecure,omitempty"`
@@ -119,6 +120,7 @@ func CreateConfig() *Config {
 		AnythingLLMCreateUsers: true,
 		AnythingLLMDefaultRole: "default",
 		CallbackPath:           "/sso/callback",
+		LoginPath:              "/sso/login",
 		LogoutPath:             "/sso/logout",
 		SessionCookieName:      "_anythingllm_keycloak_sso",
 		SessionCookieSecure:    true,
@@ -158,6 +160,10 @@ func New(_ context.Context, next http.Handler, config *Config, name string) (htt
 		config.CallbackPath = "/" + config.CallbackPath
 	}
 
+	if config.LoginPath != "" && !strings.HasPrefix(config.LoginPath, "/") {
+		config.LoginPath = "/" + config.LoginPath
+	}
+
 	if config.LogoutPath != "" && !strings.HasPrefix(config.LogoutPath, "/") {
 		config.LogoutPath = "/" + config.LogoutPath
 	}
@@ -185,6 +191,10 @@ func (m *Middleware) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 		m.handleCallback(rw, req)
 
 		return
+	case m.config.LoginPath:
+		m.handleLogin(rw, req)
+
+		return
 	case m.config.LogoutPath:
 		m.handleLogout(rw, req)
 
@@ -203,10 +213,20 @@ func (m *Middleware) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	m.startLogin(rw, req)
+	m.startLogin(rw, req, requestTarget(req))
 }
 
-func (m *Middleware) startLogin(rw http.ResponseWriter, req *http.Request) {
+func (m *Middleware) handleLogin(rw http.ResponseWriter, req *http.Request) {
+	returnTo := strings.TrimSpace(req.URL.Query().Get("redirectTo"))
+
+	if !isSafeReturnTarget(returnTo) {
+		returnTo = strings.TrimRight(m.config.AnythingLLMBaseURL, "/")
+	}
+
+	m.startLogin(rw, req, returnTo)
+}
+
+func (m *Middleware) startLogin(rw http.ResponseWriter, req *http.Request, returnTo string) {
 	nonce, err := randomToken(32)
 
 	if err != nil {
@@ -216,7 +236,7 @@ func (m *Middleware) startLogin(rw http.ResponseWriter, req *http.Request) {
 
 	state := StatePayload{
 		Nonce:     nonce,
-		ReturnTo:  requestTarget(req),
+		ReturnTo:  returnTo,
 		ExpiresAt: time.Now().Add(10 * time.Minute).Unix(),
 	}
 
@@ -853,6 +873,22 @@ func requestTarget(req *http.Request) string {
 	}
 
 	return target
+}
+
+func isSafeReturnTarget(target string) bool {
+	if target == "" {
+		return false
+	}
+
+	if !strings.HasPrefix(target, "/") {
+		return false
+	}
+
+	if strings.HasPrefix(target, "//") || strings.HasPrefix(target, "/\\") {
+		return false
+	}
+
+	return true
 }
 
 func shouldStartLogin(req *http.Request) bool {
