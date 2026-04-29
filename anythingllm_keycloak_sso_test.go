@@ -134,8 +134,72 @@ func TestLoginRouteRedirectsToKeycloak(t *testing.T) {
 		t.Fatalf("failed to decode state cookie")
 	}
 
-	if state.ReturnTo != "/sso/login" {
-		t.Fatalf("expected returnTo to mirror the requested path, got %q", state.ReturnTo)
+	if state.ReturnTo != "/" {
+		t.Fatalf("expected returnTo to default to %q, got %q", "/", state.ReturnTo)
+	}
+}
+
+func TestLoginRouteShortCircuitsWhenSessionAlreadyValid(t *testing.T) {
+	handler, err := New(context.Background(), http.HandlerFunc(func(rw http.ResponseWriter, _ *http.Request) {
+		rw.WriteHeader(http.StatusNoContent)
+	}), &Config{
+		KeycloakIssuerURL:        "https://keycloak.example.com/realms/cognitio",
+		KeycloakClientID:         "anythingllm",
+		KeycloakClientSecret:     "secret",
+		KeycloakUsernameClaim:    "preferred_username",
+		AnythingLLMBaseURL:       "http://anythingllm.cognitio.svc.cluster.local:3001",
+		AnythingLLMPublicBaseURL: "https://llm.example.com",
+		AnythingLLMApiKey:        "api-key",
+		SessionSecret:            "session-secret",
+		CallbackPath:             "/sso/callback",
+		LoginPath:                "/sso/login",
+		SessionCookieName:        "_anythingllm_keycloak_sso",
+		SessionTTLSeconds:        3600,
+		AnythingLLMCreateUsers:   true,
+		AnythingLLMDefaultRole:   "default",
+	}, "anythingllm-keycloak-sso")
+	if err != nil {
+		t.Fatalf("unexpected error creating middleware: %v", err)
+	}
+
+	middleware := handler.(*Middleware)
+
+	sessionRecorder := httptest.NewRecorder()
+
+	if err := middleware.writeSignedCookie(sessionRecorder, middleware.config.SessionCookieName, SessionPayload{
+		Username:      "user",
+		UsernameClaim: middleware.sessionUsernameClaim(),
+		ExpiresAt:     time.Now().Add(time.Hour).Unix(),
+	}, time.Hour); err != nil {
+		t.Fatalf("failed to seed session cookie: %v", err)
+	}
+
+	var sessionCookie *http.Cookie
+
+	for _, cookie := range sessionRecorder.Result().Cookies() {
+		if cookie.Name == middleware.config.SessionCookieName {
+			sessionCookie = cookie
+			break
+		}
+	}
+
+	if sessionCookie == nil {
+		t.Fatalf("expected seeded session cookie")
+	}
+
+	request := httptest.NewRequest(http.MethodGet, "https://llm.example.com/sso/login", nil)
+	request.Header.Set("X-Forwarded-Proto", "https")
+	request.AddCookie(sessionCookie)
+	recorder := httptest.NewRecorder()
+
+	handler.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusFound {
+		t.Fatalf("expected status %d, got %d", http.StatusFound, recorder.Code)
+	}
+
+	if location := recorder.Header().Get("Location"); location != "https://llm.example.com/" {
+		t.Fatalf("expected redirect to AnythingLLM root, got %q", location)
 	}
 }
 

@@ -218,7 +218,12 @@ func (m *Middleware) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 }
 
 func (m *Middleware) handleLogin(rw http.ResponseWriter, req *http.Request) {
-	m.startLogin(rw, req, requestTarget(req))
+	if _, ok := m.readSession(req); ok {
+		http.Redirect(rw, req, m.anythingPublicURL("/"), http.StatusFound)
+		return
+	}
+
+	m.startLogin(rw, req, "/")
 }
 
 func (m *Middleware) startLogin(rw http.ResponseWriter, req *http.Request, returnTo string) {
