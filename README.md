@@ -11,7 +11,7 @@ Traefik middleware plugin that authenticates AnythingLLM users with Keycloak ove
 5. The plugin looks up the user in AnythingLLM and can create it automatically when enabled.
 6. The plugin requests a temporary login URL from AnythingLLM using `/api/v1/users/{id}/issue-auth-token`.
 7. If `anythingLLMDefaultWorkspaceSlugs` is configured, the plugin ensures the user belongs to those workspaces before issuing the login token.
-8. The browser is redirected to the `loginPath` returned by AnythingLLM. When the original request path is not `/`, the plugin appends `redirectTo=<original path>`.
+8. The browser is redirected to the `loginPath` returned by AnythingLLM, which lands the user on the AnythingLLM root.
 
 ## Requirements
 

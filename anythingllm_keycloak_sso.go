@@ -56,7 +56,6 @@ type Middleware struct {
 
 type StatePayload struct {
 	Nonce     string `json:"nonce"`
-	ReturnTo  string `json:"returnTo"`
 	ExpiresAt int64  `json:"expiresAt"`
 }
 
@@ -214,7 +213,7 @@ func (m *Middleware) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	m.startLogin(rw, req, requestTarget(req))
+	m.startLogin(rw, req)
 }
 
 func (m *Middleware) handleLogin(rw http.ResponseWriter, req *http.Request) {
@@ -223,10 +222,10 @@ func (m *Middleware) handleLogin(rw http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	m.startLogin(rw, req, "/")
+	m.startLogin(rw, req)
 }
 
-func (m *Middleware) startLogin(rw http.ResponseWriter, req *http.Request, returnTo string) {
+func (m *Middleware) startLogin(rw http.ResponseWriter, req *http.Request) {
 	nonce, err := randomToken(32)
 
 	if err != nil {
@@ -236,7 +235,6 @@ func (m *Middleware) startLogin(rw http.ResponseWriter, req *http.Request, retur
 
 	state := StatePayload{
 		Nonce:     nonce,
-		ReturnTo:  returnTo,
 		ExpiresAt: time.Now().Add(10 * time.Minute).Unix(),
 	}
 
@@ -336,9 +334,7 @@ func (m *Middleware) handleCallback(rw http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	redirectURL := m.anythingPublicURL(withRedirectTo(loginPath, state.ReturnTo))
-
-	http.Redirect(rw, req, redirectURL, http.StatusFound)
+	http.Redirect(rw, req, m.anythingPublicURL(loginPath), http.StatusFound)
 }
 
 func (m *Middleware) handleLogout(rw http.ResponseWriter, req *http.Request) {
@@ -855,16 +851,6 @@ func (m *Middleware) stateCookieName() string {
 	return m.config.SessionCookieName + "_state"
 }
 
-func requestTarget(req *http.Request) string {
-	target := req.URL.RequestURI()
-
-	if target == "" {
-		return "/"
-	}
-
-	return target
-}
-
 func shouldStartLogin(req *http.Request) bool {
 	if req.Method != http.MethodGet && req.Method != http.MethodHead {
 		return false
@@ -881,26 +867,6 @@ func shouldStartLogin(req *http.Request) bool {
 	}
 
 	return accept == "" && req.URL.Path == "/"
-}
-
-func withRedirectTo(loginPath, returnTo string) string {
-	if returnTo == "" || returnTo == "/" {
-		return loginPath
-	}
-
-	parsed, err := url.Parse(loginPath)
-
-	if err != nil {
-		return loginPath
-	}
-
-	query := parsed.Query()
-
-	query.Set("redirectTo", returnTo)
-
-	parsed.RawQuery = query.Encode()
-
-	return parsed.String()
 }
 
 func claimString(payload map[string]any, key string) string {
