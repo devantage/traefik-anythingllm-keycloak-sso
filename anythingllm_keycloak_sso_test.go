@@ -181,6 +181,207 @@ func TestLoginRouteShortCircuitsWhenSessionAlreadyValid(t *testing.T) {
 	}
 }
 
+func TestAnythingLLMLogoutDetectionTriggersKeycloakLogout(t *testing.T) {
+	handler, err := New(context.Background(), http.HandlerFunc(func(rw http.ResponseWriter, _ *http.Request) {
+		t.Fatalf("downstream should not be reached when AnythingLLM logout is detected")
+	}), &Config{
+		KeycloakIssuerURL:              "https://keycloak.example.com/realms/cognitio",
+		KeycloakClientID:               "anythingllm",
+		KeycloakClientSecret:           "secret",
+		KeycloakUsernameClaim:          "preferred_username",
+		AnythingLLMBaseURL:             "http://anythingllm.cognitio.svc.cluster.local:3001",
+		AnythingLLMPublicBaseURL:       "https://llm.example.com",
+		AnythingLLMApiKey:              "api-key",
+		SessionSecret:                  "session-secret",
+		CallbackPath:                   "/sso/callback",
+		LoginPath:                      "/sso/login",
+		LogoutPath:                     "/sso/logout",
+		AnythingLLMLogoutDetectionPath: "/login",
+		AnythingLLMLogoutAction:        "keycloak",
+		SessionCookieName:              "_anythingllm_keycloak_sso",
+		SessionTTLSeconds:              3600,
+		AnythingLLMCreateUsers:         true,
+		AnythingLLMDefaultRole:         "default",
+	}, "anythingllm-keycloak-sso")
+	if err != nil {
+		t.Fatalf("unexpected error creating middleware: %v", err)
+	}
+
+	middleware := handler.(*Middleware)
+
+	sessionCookie := seedSessionCookie(t, middleware)
+
+	request := httptest.NewRequest(http.MethodGet, "https://llm.example.com/login?nt=1", nil)
+	request.Header.Set("X-Forwarded-Proto", "https")
+	request.AddCookie(sessionCookie)
+	recorder := httptest.NewRecorder()
+
+	handler.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusFound {
+		t.Fatalf("expected status %d, got %d", http.StatusFound, recorder.Code)
+	}
+
+	location := recorder.Header().Get("Location")
+
+	if !strings.HasPrefix(location, "https://keycloak.example.com/realms/cognitio/protocol/openid-connect/logout?") {
+		t.Fatalf("expected redirect to Keycloak logout, got %q", location)
+	}
+
+	assertCookieCleared(t, recorder.Result().Cookies(), middleware.config.SessionCookieName)
+}
+
+func TestAnythingLLMLogoutDetectionSilentRestartsSSO(t *testing.T) {
+	handler, err := New(context.Background(), http.HandlerFunc(func(rw http.ResponseWriter, _ *http.Request) {
+		t.Fatalf("downstream should not be reached when AnythingLLM logout is detected")
+	}), &Config{
+		KeycloakIssuerURL:              "https://keycloak.example.com/realms/cognitio",
+		KeycloakClientID:               "anythingllm",
+		KeycloakClientSecret:           "secret",
+		KeycloakUsernameClaim:          "preferred_username",
+		AnythingLLMBaseURL:             "http://anythingllm.cognitio.svc.cluster.local:3001",
+		AnythingLLMPublicBaseURL:       "https://llm.example.com",
+		AnythingLLMApiKey:              "api-key",
+		SessionSecret:                  "session-secret",
+		CallbackPath:                   "/sso/callback",
+		LoginPath:                      "/sso/login",
+		LogoutPath:                     "/sso/logout",
+		AnythingLLMLogoutDetectionPath: "/login",
+		AnythingLLMLogoutAction:        "silent",
+		SessionCookieName:              "_anythingllm_keycloak_sso",
+		SessionTTLSeconds:              3600,
+		AnythingLLMCreateUsers:         true,
+		AnythingLLMDefaultRole:         "default",
+	}, "anythingllm-keycloak-sso")
+	if err != nil {
+		t.Fatalf("unexpected error creating middleware: %v", err)
+	}
+
+	middleware := handler.(*Middleware)
+
+	sessionCookie := seedSessionCookie(t, middleware)
+
+	request := httptest.NewRequest(http.MethodGet, "https://llm.example.com/login?nt=1", nil)
+	request.Header.Set("X-Forwarded-Proto", "https")
+	request.AddCookie(sessionCookie)
+	recorder := httptest.NewRecorder()
+
+	handler.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusFound {
+		t.Fatalf("expected status %d, got %d", http.StatusFound, recorder.Code)
+	}
+
+	location := recorder.Header().Get("Location")
+
+	if !strings.HasPrefix(location, "https://keycloak.example.com/realms/cognitio/protocol/openid-connect/auth?") {
+		t.Fatalf("expected redirect to Keycloak auth, got %q", location)
+	}
+
+	assertCookieCleared(t, recorder.Result().Cookies(), middleware.config.SessionCookieName)
+}
+
+func TestAnythingLLMLogoutDetectionPassesThroughWithoutSession(t *testing.T) {
+	downstreamCalled := false
+
+	handler, err := New(context.Background(), http.HandlerFunc(func(rw http.ResponseWriter, _ *http.Request) {
+		downstreamCalled = true
+		rw.WriteHeader(http.StatusNoContent)
+	}), &Config{
+		KeycloakIssuerURL:              "https://keycloak.example.com/realms/cognitio",
+		KeycloakClientID:               "anythingllm",
+		KeycloakClientSecret:           "secret",
+		KeycloakUsernameClaim:          "preferred_username",
+		AnythingLLMBaseURL:             "http://anythingllm.cognitio.svc.cluster.local:3001",
+		AnythingLLMPublicBaseURL:       "https://llm.example.com",
+		AnythingLLMApiKey:              "api-key",
+		SessionSecret:                  "session-secret",
+		CallbackPath:                   "/sso/callback",
+		LoginPath:                      "/sso/login",
+		LogoutPath:                     "/sso/logout",
+		AnythingLLMLogoutDetectionPath: "/login",
+		AnythingLLMLogoutAction:        "keycloak",
+		SessionCookieName:              "_anythingllm_keycloak_sso",
+		SessionTTLSeconds:              3600,
+		AnythingLLMCreateUsers:         true,
+		AnythingLLMDefaultRole:         "default",
+	}, "anythingllm-keycloak-sso")
+	if err != nil {
+		t.Fatalf("unexpected error creating middleware: %v", err)
+	}
+
+	request := httptest.NewRequest(http.MethodGet, "https://llm.example.com/login?nt=1", nil)
+	request.Header.Set("X-Forwarded-Proto", "https")
+	request.Header.Set("Accept", "text/html")
+	recorder := httptest.NewRecorder()
+
+	handler.ServeHTTP(recorder, request)
+
+	if downstreamCalled {
+		t.Fatalf("downstream should not be reached when no session is present")
+	}
+
+	if recorder.Code != http.StatusFound {
+		t.Fatalf("expected status %d, got %d", http.StatusFound, recorder.Code)
+	}
+
+	if location := recorder.Header().Get("Location"); !strings.HasPrefix(location, "https://keycloak.example.com/realms/cognitio/protocol/openid-connect/auth?") {
+		t.Fatalf("expected redirect to Keycloak auth (start login), got %q", location)
+	}
+}
+
+func TestRejectsInvalidLogoutAction(t *testing.T) {
+	_, err := New(context.Background(), http.HandlerFunc(func(rw http.ResponseWriter, _ *http.Request) {}), &Config{
+		KeycloakIssuerURL:       "https://keycloak.example.com/realms/cognitio",
+		KeycloakClientID:        "anythingllm",
+		KeycloakClientSecret:    "secret",
+		AnythingLLMBaseURL:      "http://anythingllm.cognitio.svc.cluster.local:3001",
+		AnythingLLMApiKey:       "api-key",
+		SessionSecret:           "session-secret",
+		AnythingLLMLogoutAction: "explode",
+	}, "anythingllm-keycloak-sso")
+
+	if err == nil {
+		t.Fatalf("expected error for invalid AnythingLLMLogoutAction")
+	}
+}
+
+func seedSessionCookie(t *testing.T, m *Middleware) *http.Cookie {
+	t.Helper()
+
+	recorder := httptest.NewRecorder()
+
+	if err := m.writeSignedCookie(recorder, m.config.SessionCookieName, SessionPayload{
+		Username:      "user",
+		UsernameClaim: m.sessionUsernameClaim(),
+		ExpiresAt:     time.Now().Add(time.Hour).Unix(),
+	}, time.Hour); err != nil {
+		t.Fatalf("failed to seed session cookie: %v", err)
+	}
+
+	for _, cookie := range recorder.Result().Cookies() {
+		if cookie.Name == m.config.SessionCookieName {
+			return cookie
+		}
+	}
+
+	t.Fatalf("expected seeded session cookie")
+
+	return nil
+}
+
+func assertCookieCleared(t *testing.T, cookies []*http.Cookie, name string) {
+	t.Helper()
+
+	for _, cookie := range cookies {
+		if cookie.Name == name && cookie.MaxAge < 0 {
+			return
+		}
+	}
+
+	t.Fatalf("expected %q cookie to be cleared (MaxAge<0)", name)
+}
+
 func TestUnauthenticatedAssetRequestReturnsUnauthorizedInsteadOfRedirect(t *testing.T) {
 	handler, err := New(context.Background(), http.HandlerFunc(func(rw http.ResponseWriter, _ *http.Request) {
 		rw.WriteHeader(http.StatusNoContent)
