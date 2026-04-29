@@ -217,13 +217,7 @@ func (m *Middleware) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 }
 
 func (m *Middleware) handleLogin(rw http.ResponseWriter, req *http.Request) {
-	returnTo := strings.TrimSpace(req.URL.Query().Get("redirectTo"))
-
-	if !isSafeReturnTarget(returnTo) {
-		returnTo = strings.TrimRight(m.config.AnythingLLMBaseURL, "/")
-	}
-
-	m.startLogin(rw, req, returnTo)
+	m.startLogin(rw, req, requestTarget(req))
 }
 
 func (m *Middleware) startLogin(rw http.ResponseWriter, req *http.Request, returnTo string) {
@@ -873,22 +867,6 @@ func requestTarget(req *http.Request) string {
 	}
 
 	return target
-}
-
-func isSafeReturnTarget(target string) bool {
-	if target == "" {
-		return false
-	}
-
-	if !strings.HasPrefix(target, "/") {
-		return false
-	}
-
-	if strings.HasPrefix(target, "//") || strings.HasPrefix(target, "/\\") {
-		return false
-	}
-
-	return true
 }
 
 func shouldStartLogin(req *http.Request) bool {

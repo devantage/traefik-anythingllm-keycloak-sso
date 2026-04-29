@@ -4,7 +4,7 @@ Traefik middleware plugin that authenticates AnythingLLM users with Keycloak ove
 
 ## Flow
 
-1. Unauthenticated requests are redirected to the Keycloak authorization endpoint. The plugin also exposes an explicit `loginPath` (default `/sso/login`) that always starts the login flow; it accepts an optional `redirectTo` query parameter for the post-login destination and falls back to `anythingLLMBaseURL` when none is provided.
+1. Unauthenticated requests are redirected to the Keycloak authorization endpoint. The plugin also exposes an explicit `loginPath` (default `/sso/login`) that triggers the same login flow used when the session cookie expires.
 2. Traefik receives the OIDC callback at `callbackPath`.
 3. The plugin exchanges the authorization code for an access token.
 4. The plugin calls the Keycloak `userinfo` endpoint and extracts the username claim.
@@ -115,7 +115,7 @@ spec:
 | `anythingLLMDefaultRole`            | Role assigned to automatically created AnythingLLM users.                                              | No          | `default`                   | Sent to `/api/v1/admin/users/new`                                                                                             |
 | `anythingLLMDefaultWorkspacesSlugs` | Workspace slugs that should always be assigned to authenticated users.                                 | No          | None                        | Applied to both new and pre-existing users without removing existing members                                                  |
 | `callbackPath`                      | Path where Traefik receives the OIDC callback from Keycloak.                                           | No          | `/sso/callback`             | If configured without a leading slash, the plugin adds it                                                                     |
-| `loginPath`                         | Path intercepted by the middleware to start the OIDC login flow regardless of authentication state.   | No          | `/sso/login`                | Accepts an optional `redirectTo` query parameter (only same-origin paths starting with `/`); falls back to `anythingLLMBaseURL` |
+| `loginPath`                         | Path intercepted by the middleware to start the OIDC login flow regardless of authentication state.   | No          | `/sso/login`                | Triggers the same login flow used when the session cookie expires                                                             |
 | `logoutPath`                        | Path intercepted by the middleware to clear the session cookie and redirect to Keycloak logout.        | No          | `/sso/logout`               | If configured without a leading slash, the plugin adds it                                                                     |
 | `sessionCookieName`                 | Name of the signed session cookie created by the middleware.                                           | No          | `_anythingllm_keycloak_sso` | The plugin also uses `<sessionCookieName>_state` during login; changing `keycloakUsernameClaim` invalidates existing sessions |
 | `sessionCookieSecure`               | Marks the middleware cookies as `Secure`.                                                              | No          | `true`                      | Applies to both session and state cookies                                                                                     |
