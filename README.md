@@ -4,6 +4,7 @@ Traefik middleware plugin that authenticates AnythingLLM users with Keycloak ove
 
 ## Flow
 
+0. Requests to `/api/*` bypass the middleware entirely and are forwarded straight to the AnythingLLM backend, which handles its own API authentication (Bearer tokens).
 1. Unauthenticated requests are redirected to the Keycloak authorization endpoint. The plugin also exposes an explicit `loginPath` (default `/sso/login`) that triggers the same login flow used when the session cookie expires.
 2. Traefik receives the OIDC callback at `callbackPath`.
 3. The plugin exchanges the authorization code for an access token.
@@ -51,7 +52,6 @@ spec:
       keycloakClientId: anythingllm
       keycloakClientSecret: KEYCLOAK_CLIENT_SECRET
       anythingLLMBaseURL: http://anythingllm.cognitio.svc.cluster.local:3001
-      anythingLLMPublicBaseURL: https://anythingllm.example.com
       anythingLLMApiKey: ANYTHINGLLM_API_KEY
       sessionSecret: TRAEFIK_ANYTHINGLLM_SESSION_SECRET
       anythingLLMCreateUsers: true
@@ -81,7 +81,6 @@ spec:
       keycloakClientId: anythingllm
       keycloakClientSecretEnv: KEYCLOAK_CLIENT_SECRET_ENV
       anythingLLMBaseURL: http://anythingllm.cognitio.svc.cluster.local:3001
-      anythingLLMPublicBaseURL: https://anythingllm.example.com
       anythingLLMApiKeyEnv: ANYTHINGLLM_API_KEY_ENV
       sessionSecretEnv: TRAEFIK_ANYTHINGLLM_SESSION_SECRET_ENV
       keycloakScopes: openid profile email
@@ -111,8 +110,7 @@ spec:
 | `keycloakScopes`                    | Space-separated OAuth scopes requested during login.                                                   | No          | `openid profile email`      | Sent as the `scope` parameter to Keycloak                                                                                     |
 | `keycloakUsernameClaim`             | Claim used to extract the AnythingLLM username from Keycloak `userinfo`.                               | No          | `preferred_username`        | If empty or missing, the plugin falls back to email and then `sub`                                                            |
 | `keycloakEmailClaim`                | Claim used to read the email from Keycloak `userinfo`.                                                 | No          | `email`                     | Used as fallback when the username claim is empty                                                                             |
-| `anythingLLMBaseURL`        | Base URL the middleware uses for outbound API calls to AnythingLLM (user lookup, user creation, and token issuance). | Yes | None                        | Should point to a private/internal address (e.g. a cluster-local Service) so the middleware's own requests are not routed back through Traefik |
-| `anythingLLMPublicBaseURL`          | Public base URL used to build the OIDC `redirect_uri`, the post-login browser redirect, and the post-logout redirect. | No | Falls back to `anythingLLMBaseURL` | Set this whenever the public AnythingLLM URL differs from the internal one (almost always the case in production) |
+| `anythingLLMBaseURL`                | Base URL the middleware uses for outbound API calls to AnythingLLM (user lookup, user creation, and token issuance). | Yes | None                        | Should point to a private/internal address (e.g. a cluster-local Service) so the middleware's own requests are not routed back through Traefik. The public URL used for OIDC `redirect_uri` and post-login/logout redirects is derived from the incoming request (`X-Forwarded-Proto` / `X-Forwarded-Host` / `Host`). |
 | `anythingLLMApiKey`                 | AnythingLLM API key provided directly in the middleware configuration.                                 | Conditional | None                        | Required if `anythingLLMApiKeyEnv` is not set or resolves to an empty value                                                   |
 | `anythingLLMApiKeyEnv`              | Environment variable name that contains the AnythingLLM API key.                                       | Conditional | None                        | Takes precedence over `anythingLLMApiKey` when both are present                                                               |
 | `anythingLLMCreateUsers`            | Automatically creates the AnythingLLM user when it does not already exist.                             | No          | `true`                      | When `false`, authentication fails if the user is missing                                                                     |

@@ -28,7 +28,6 @@ type Config struct {
 	KeycloakUsernameClaim             string   `json:"keycloakUsernameClaim,omitempty"`
 	KeycloakEmailClaim                string   `json:"keycloakEmailClaim,omitempty"`
 	AnythingLLMBaseURL                string   `json:"anythingLLMBaseURL,omitempty"`
-	AnythingLLMPublicBaseURL          string   `json:"anythingLLMPublicBaseURL,omitempty"`
 	AnythingLLMApiKey                 string   `json:"anythingLLMApiKey,omitempty"`
 	AnythingLLMApiKeyEnv              string   `json:"anythingLLMApiKeyEnv,omitempty"`
 	AnythingLLMCreateUsers            bool     `json:"anythingLLMCreateUsers,omitempty"`
@@ -205,6 +204,12 @@ func New(_ context.Context, next http.Handler, config *Config, name string) (htt
 }
 
 func (m *Middleware) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
+	if isAnythingLLMAPIPath(req.URL.Path) {
+		m.next.ServeHTTP(rw, req)
+
+		return
+	}
+
 	switch req.URL.Path {
 	case m.config.CallbackPath:
 		m.handleCallback(rw, req)
@@ -255,7 +260,7 @@ func (m *Middleware) handleAnythingLLMLogout(rw http.ResponseWriter, req *http.R
 
 func (m *Middleware) handleLogin(rw http.ResponseWriter, req *http.Request) {
 	if _, ok := m.readSession(req); ok {
-		http.Redirect(rw, req, m.anythingPublicURL("/"), http.StatusFound)
+		http.Redirect(rw, req, m.anythingPublicURL(req, "/"), http.StatusFound)
 		return
 	}
 
@@ -285,7 +290,7 @@ func (m *Middleware) startLogin(rw http.ResponseWriter, req *http.Request) {
 	query.Set("client_id", m.config.KeycloakClientID)
 	query.Set("response_type", "code")
 	query.Set("scope", m.config.KeycloakScopes)
-	query.Set("redirect_uri", m.anythingPublicURL(m.config.CallbackPath))
+	query.Set("redirect_uri", m.anythingPublicURL(req, m.config.CallbackPath))
 	query.Set("state", nonce)
 
 	http.Redirect(rw, req, m.issuerEndpoint("/protocol/openid-connect/auth")+"?"+query.Encode(), http.StatusFound)
@@ -315,7 +320,7 @@ func (m *Middleware) handleCallback(rw http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	tokenResponse, err := m.exchangeCode(req.Context(), code, m.anythingPublicURL(m.config.CallbackPath))
+	tokenResponse, err := m.exchangeCode(req.Context(), code, m.anythingPublicURL(req, m.config.CallbackPath))
 
 	if err != nil {
 		m.writeError(rw, http.StatusBadGateway, err.Error())
@@ -369,7 +374,7 @@ func (m *Middleware) handleCallback(rw http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	http.Redirect(rw, req, m.anythingPublicURL(loginPath), http.StatusFound)
+	http.Redirect(rw, req, m.anythingPublicURL(req, loginPath), http.StatusFound)
 }
 
 func (m *Middleware) handleLogout(rw http.ResponseWriter, req *http.Request) {
@@ -380,7 +385,7 @@ func (m *Middleware) handleLogout(rw http.ResponseWriter, req *http.Request) {
 	query := url.Values{}
 
 	query.Set("client_id", m.config.KeycloakClientID)
-	query.Set("post_logout_redirect_uri", m.anythingPublicURL("/"))
+	query.Set("post_logout_redirect_uri", m.anythingPublicURL(req, "/"))
 
 	http.Redirect(rw, req, m.issuerEndpoint("/protocol/openid-connect/logout")+"?"+query.Encode(), http.StatusFound)
 }
@@ -755,14 +760,22 @@ func (m *Middleware) anythingURL(path string) string {
 	return strings.TrimRight(m.config.AnythingLLMBaseURL, "/") + path
 }
 
-func (m *Middleware) anythingPublicURL(path string) string {
-	base := strings.TrimSpace(m.config.AnythingLLMPublicBaseURL)
+func (m *Middleware) anythingPublicURL(req *http.Request, path string) string {
+	scheme := "http"
 
-	if base == "" {
-		base = m.config.AnythingLLMBaseURL
+	if proto := strings.TrimSpace(req.Header.Get("X-Forwarded-Proto")); proto != "" {
+		scheme = proto
+	} else if req.TLS != nil {
+		scheme = "https"
 	}
 
-	return strings.TrimRight(base, "/") + path
+	host := strings.TrimSpace(req.Header.Get("X-Forwarded-Host"))
+
+	if host == "" {
+		host = req.Host
+	}
+
+	return scheme + "://" + host + path
 }
 
 func (m *Middleware) writeError(rw http.ResponseWriter, status int, message string) {
@@ -863,6 +876,10 @@ func normalizedWorkspaceSlugs(values []string) []string {
 	}
 
 	return slugs
+}
+
+func isAnythingLLMAPIPath(path string) bool {
+	return path == "/api" || strings.HasPrefix(path, "/api/")
 }
 
 func workspaceHasUser(users []AnythingLLMWorkspaceUser, userID int) bool {
