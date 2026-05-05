@@ -104,7 +104,7 @@ func TestLoginRouteRedirectsToKeycloak(t *testing.T) {
 	var stateCookie *http.Cookie
 
 	for _, cookie := range recorder.Result().Cookies() {
-		if cookie.Name == middleware.stateCookieName() {
+		if cookie.Name == middleware.stateCookieName {
 			stateCookie = cookie
 			break
 		}
@@ -143,7 +143,7 @@ func TestLoginRouteShortCircuitsWhenSessionAlreadyValid(t *testing.T) {
 
 	if err := middleware.writeSignedCookie(sessionRecorder, middleware.config.SessionCookieName, SessionPayload{
 		Username:      "user",
-		UsernameClaim: middleware.sessionUsernameClaim(),
+		UsernameClaim: middleware.config.KeycloakUsernameClaim,
 		ExpiresAt:     time.Now().Add(time.Hour).Unix(),
 	}, time.Hour); err != nil {
 		t.Fatalf("failed to seed session cookie: %v", err)
@@ -347,7 +347,7 @@ func seedSessionCookie(t *testing.T, m *Middleware) *http.Cookie {
 
 	if err := m.writeSignedCookie(recorder, m.config.SessionCookieName, SessionPayload{
 		Username:      "user",
-		UsernameClaim: m.sessionUsernameClaim(),
+		UsernameClaim: m.config.KeycloakUsernameClaim,
 		ExpiresAt:     time.Now().Add(time.Hour).Unix(),
 	}, time.Hour); err != nil {
 		t.Fatalf("failed to seed session cookie: %v", err)
@@ -554,7 +554,7 @@ func TestReadSessionRejectsLegacySessionWithoutUsernameClaim(t *testing.T) {
 	}
 }
 
-func TestAnythingPublicURLDerivesFromForwardedHeaders(t *testing.T) {
+func TestPublicURLDerivesFromForwardedHeaders(t *testing.T) {
 	handler, err := New(context.Background(), http.HandlerFunc(func(rw http.ResponseWriter, _ *http.Request) {
 		rw.WriteHeader(http.StatusNoContent)
 	}), &Config{
@@ -575,16 +575,16 @@ func TestAnythingPublicURLDerivesFromForwardedHeaders(t *testing.T) {
 	request.Header.Set("X-Forwarded-Proto", "https")
 	request.Header.Set("X-Forwarded-Host", "llm.example.com")
 
-	if got := middleware.anythingPublicURL(request, "/sso/callback"); got != "https://llm.example.com/sso/callback" {
-		t.Fatalf("expected anythingPublicURL to honor forwarded headers, got %q", got)
+	if got := middleware.publicURL(request, "/sso/callback"); got != "https://llm.example.com/sso/callback" {
+		t.Fatalf("expected publicURL to honor forwarded headers, got %q", got)
 	}
 
-	if got := middleware.anythingPublicURL(request, ""); got != "https://llm.example.com" {
-		t.Fatalf("expected anythingPublicURL to return the bare base URL when path is empty, got %q", got)
+	if got := middleware.publicURL(request, ""); got != "https://llm.example.com" {
+		t.Fatalf("expected publicURL to return the bare base URL when path is empty, got %q", got)
 	}
 }
 
-func TestAnythingPublicURLFallsBackToRequestHost(t *testing.T) {
+func TestPublicURLFallsBackToRequestHost(t *testing.T) {
 	handler, err := New(context.Background(), http.HandlerFunc(func(rw http.ResponseWriter, _ *http.Request) {
 		rw.WriteHeader(http.StatusNoContent)
 	}), &Config{
@@ -603,8 +603,8 @@ func TestAnythingPublicURLFallsBackToRequestHost(t *testing.T) {
 
 	request := httptest.NewRequest(http.MethodGet, "https://llm.example.com/sso/callback", nil)
 
-	if got := middleware.anythingPublicURL(request, "/sso/callback"); got != "https://llm.example.com/sso/callback" {
-		t.Fatalf("expected anythingPublicURL to derive scheme from req.TLS and host from req.Host, got %q", got)
+	if got := middleware.publicURL(request, "/sso/callback"); got != "https://llm.example.com/sso/callback" {
+		t.Fatalf("expected publicURL to derive scheme from req.TLS and host from req.Host, got %q", got)
 	}
 }
 
